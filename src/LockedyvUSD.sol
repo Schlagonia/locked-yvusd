@@ -7,11 +7,26 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IVault} from "@yearn-vaults/interfaces/IVault.sol";
 import {IVaultFactory} from "@yearn-vaults/interfaces/IVaultFactory.sol";
 
+/**
+ * @notice Interface extension for vault factory access
+ * @dev Provides access to the vault's factory address
+ */
 interface IVaultCorrected {
+    /**
+     * @notice Returns the factory address that deployed this vault
+     * @return The factory contract address
+     */
     function FACTORY() external view returns (address);
 }
 
-// NOTE: If the lockers are not a junior capital then we can do a sudse style cooldown and no earn extra yield during th period with no window.
+/**
+ * @title LockedyvUSD
+ * @author Yearn Finance
+ * @notice A vault hook contract that implements cooldown periods for withdrawals
+ * @dev This contract extends BaseHooks to add withdrawal restrictions through a cooldown mechanism.
+ *      Users must initiate a cooldown period before they can withdraw their funds, and then must
+ *      withdraw within a specified window after the cooldown expires.
+ */
 contract LockedyvUSD is BaseHooks {
     using SafeERC20 for ERC20;
 
@@ -48,22 +63,35 @@ contract LockedyvUSD is BaseHooks {
         uint16 lockedVaultFee; // Locked vault fee in basis points
     }
 
+    /// @notice Maximum allowed management fee (2% annually)
     uint256 internal constant MAX_MANAGEMENT_FEE = 200;
 
+    /// @notice Seconds in a year for fee calculations
     uint256 internal constant SECS_PER_YEAR = 31_556_952;
 
+    /// @notice Immutable reference to the vault factory
     IVaultFactory public immutable VAULT_FACTORY;
 
+    /// @notice Accumulated fee shares awaiting withdrawal
     uint256 public feeShares;
 
+    /// @notice Current fee configuration
     FeeConfig public feeConfig;
 
+    /// @notice Duration users must wait before withdrawing (default: 14 days)
     uint256 public cooldownDuration;
 
+    /// @notice Window after cooldown during which users can withdraw (default: 7 days)
     uint256 public withdrawalWindow;
 
+    /// @notice Mapping of user addresses to their cooldown status
     mapping(address => UserCooldown) public cooldowns;
 
+    /**
+     * @notice Initializes the LockedyvUSD contract
+     * @param _asset The vault (yvUSD) that this contract will hook into
+     * @param _name The name for the locked token
+     */
     constructor(address _asset, string memory _name) BaseHooks(_asset, _name) {
         VAULT_FACTORY = IVaultFactory(IVaultCorrected(_asset).FACTORY());
 
@@ -73,6 +101,18 @@ contract LockedyvUSD is BaseHooks {
         emit WithdrawalWindowUpdated(withdrawalWindow);
     }
 
+    /**
+     * @notice Processes strategy reports and calculates fees
+     * @dev Called by the vault when a strategy reports gains/losses.
+     *      Calculates management, performance, and locked vault fees based on the gain.
+     *      Management fees are charged based on time elapsed and debt amount.
+     *      Performance and locked vault fees are only charged on gains.
+     * @param _strategy The strategy address reporting
+     * @param _gain Amount of gain reported by the strategy
+     * @param _loss Amount of loss reported by the strategy (unused but required by interface)
+     * @return _fees Total fees to be charged in asset tokens
+     * @return _refunds Always returns 0 (no refunds in this implementation)
+     */
     function report(
         address _strategy,
         uint256 _gain,
@@ -132,6 +172,14 @@ contract LockedyvUSD is BaseHooks {
         emit FeesReported(managementFee, performanceFee, lockedVaultFee);
     }
 
+    /**
+     * @notice Calculates expected shares after protocol fee deduction
+     * @dev Computes the net shares that will be received after the vault factory
+     *      takes its protocol fee cut. Used during fee reporting to accurately
+     *      track fee shares.
+     * @param _fees The fee amount in asset tokens
+     * @return The net shares after protocol fee deduction
+     */
     function getExpectedShares(uint256 _fees) public view returns (uint256) {
         if (_fees == 0) return 0;
 
@@ -148,15 +196,40 @@ contract LockedyvUSD is BaseHooks {
         return totalShares;
     }
 
+    /**
+     * @notice Deploy funds to strategies (no-op for this implementation)
+     * @dev Override from BaseHooks. This hook doesn't deploy funds elsewhere.
+     * @param _amount Amount to deploy (unused)
+     */
     function _deployFunds(uint256 _amount) internal override {}
 
+    /**
+     * @notice Free funds from strategies (no-op for this implementation)
+     * @dev Override from BaseHooks. This hook doesn't need to free funds.
+     * @param _amount Amount to free (unused)
+     */
     function _freeFunds(uint256 _amount) internal override {}
 
+    /**
+     * @notice Report available balance for harvest
+     * @dev Override from BaseHooks. Returns vault token balance minus accumulated fee shares.
+     * @return Available balance that can be harvested
+     */
     function _harvestAndReport() internal override returns (uint256) {
         return asset.balanceOf(address(this)) - feeShares;
     }
 
-    /// @dev Post-withdraw hook to update cooldown after successful withdrawal
+    /**
+     * @notice Post-withdraw hook to update cooldown after successful withdrawal
+     * @dev Override from BaseHooks. Updates or clears the user's cooldown state
+     *      after a successful withdrawal. If withdrawing all cooldown shares,
+     *      the cooldown is cleared. For partial withdrawals, cooldown shares are reduced.
+     * @param assets Amount of assets withdrawn (unused but required by interface)
+     * @param shares Amount of shares withdrawn
+     * @param receiver Address receiving the assets (unused but required by interface)
+     * @param owner Address that owns the shares being withdrawn
+     * @param maxLoss Maximum loss tolerance (unused but required by interface)
+     */
     function _postWithdrawHook(
         uint256 assets,
         uint256 shares,
@@ -245,9 +318,15 @@ contract LockedyvUSD is BaseHooks {
         emit CooldownCancelled(msg.sender);
     }
 
-    /// @dev Enforces lock period, cooldown, and withdrawal window requirements
-    /// @param _owner Address to check limit for
-    /// @return Maximum withdrawal amount allowed in assets
+    /**
+     * @notice Returns the maximum amount a user can withdraw
+     * @dev Enforces lock period, cooldown, and withdrawal window requirements.
+     *      Returns 0 if user hasn't started cooldown, is still in cooldown period,
+     *      or the withdrawal window has expired. During shutdown or when cooldown
+     *      is disabled (duration = 0), returns max uint to allow unrestricted withdrawals.
+     * @param _owner Address to check withdrawal limit for
+     * @return Maximum withdrawal amount allowed in assets
+     */
     function availableWithdrawLimit(
         address _owner
     ) public view override returns (uint256) {
@@ -296,6 +375,11 @@ contract LockedyvUSD is BaseHooks {
         return (cooldown.cooldownEnd, cooldown.windowEnd, cooldown.shares);
     }
 
+    /**
+     * @notice Update the cooldown duration
+     * @dev Only callable by management. Setting to 0 disables cooldown requirements.
+     * @param _cooldownDuration New cooldown duration in seconds
+     */
     function setCooldownDuration(
         uint256 _cooldownDuration
     ) external onlyManagement {
@@ -303,6 +387,12 @@ contract LockedyvUSD is BaseHooks {
         emit CooldownDurationUpdated(cooldownDuration);
     }
 
+    /**
+     * @notice Update the withdrawal window duration
+     * @dev Only callable by management. Must be at least 1 day for safety.
+     *      This is the period after cooldown expires during which users can withdraw.
+     * @param _withdrawalWindow New withdrawal window duration in seconds
+     */
     function setWithdrawalWindow(
         uint256 _withdrawalWindow
     ) external onlyManagement {
@@ -338,23 +428,29 @@ contract LockedyvUSD is BaseHooks {
     }
 
     /**
-     * @notice Withdraw fees for the caller
+     * @notice Withdraw accumulated fees to the caller
+     * @dev Only callable by management or performance fee recipient.
+     *      Transfers all accumulated fee shares to the caller.
      */
     function withdrawFees() external {
         _withdrawFees(msg.sender);
     }
 
     /**
-     * @notice Withdraw fees for a given receiver
-     * @param _receiver Address to receive the fees
+     * @notice Withdraw accumulated fees to a specified receiver
+     * @dev Only callable by management or performance fee recipient.
+     *      Transfers all accumulated fee shares to the specified receiver address.
+     * @param _receiver Address to receive the fee shares
      */
     function withdrawFees(address _receiver) external {
         _withdrawFees(_receiver);
     }
 
     /**
-     * @notice Internal function to withdraw fees
-     * @param _receiver Address to receive the fees
+     * @notice Internal function to process fee withdrawals
+     * @dev Validates caller authorization and transfers accumulated fee shares.
+     *      Resets feeShares to 0 after transfer.
+     * @param _receiver Address to receive the fee shares
      */
     function _withdrawFees(address _receiver) internal {
         require(
