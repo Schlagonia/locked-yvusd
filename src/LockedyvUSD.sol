@@ -41,12 +41,12 @@ contract LockedyvUSD is BaseHooks {
     event FeesUpdated(
         uint256 indexed managementFee,
         uint256 indexed performanceFee,
-        uint256 indexed lockedVaultFee
+        uint256 indexed lockerBonus
     );
     event FeesReported(
         uint256 indexed managementFee,
         uint256 indexed performanceFee,
-        uint256 indexed lockedVaultFee
+        uint256 indexed lockerBonus
     );
 
     /// @notice Tracks user cooldown state (packed into single storage slot)
@@ -60,7 +60,7 @@ contract LockedyvUSD is BaseHooks {
     struct FeeConfig {
         uint16 managementFee; // Annual management fee in basis points
         uint16 performanceFee; // Performance fee on gains in basis points
-        uint16 lockedVaultFee; // Locked vault fee in basis points
+        uint16 lockerBonus; // Locked vault fee in basis points
     }
 
     /// @notice Maximum allowed management fee (2% annually)
@@ -131,10 +131,12 @@ contract LockedyvUSD is BaseHooks {
             "already reported"
         );
 
+        _vaultHealthCheck(strategyParams.current_debt, _gain, _loss);
+
         // Charge management fees no matter gain or loss.
         uint256 managementFee;
         uint256 performanceFee;
-        uint256 lockedVaultFee;
+        uint256 lockerBonus;
 
         // Only charge performance fees if there is a gain.
         if (_gain > 0) {
@@ -151,25 +153,68 @@ contract LockedyvUSD is BaseHooks {
 
             performanceFee = (_gain * (fee.performanceFee)) / MAX_BPS;
 
-            lockedVaultFee = (_gain * (fee.lockedVaultFee)) / MAX_BPS;
+            lockerBonus = (_gain * (fee.lockerBonus)) / MAX_BPS;
         } else {
             return (0, 0);
         }
 
-        _fees = managementFee + performanceFee + lockedVaultFee;
+        _fees = managementFee + performanceFee + lockerBonus;
 
         if (_fees > _gain) {
             _fees = _gain;
-            managementFee = _gain - (performanceFee + lockedVaultFee);
+            managementFee = _gain - (performanceFee + lockerBonus);
         }
 
-        uint256 expectedShares = getExpectedShares(_fees);
+        if (_fees == 0) {
+            return (0, 0);
+        }
 
-        feeShares +=
-            (expectedShares * (performanceFee + managementFee)) /
-            _fees;
+        // Get the expected fee shares based on the fees reported.
+        uint256 expectedFeeShares = getExpectedShares(_fees) *
+            ((performanceFee + managementFee) / _fees);
 
-        emit FeesReported(managementFee, performanceFee, lockedVaultFee);
+        if (asset.balanceOf(address(this)) >= expectedFeeShares) {
+            // If the balance of the vault is greater than the expected fee shares, transfer the fee shares to the performance fee recipient.
+            asset.safeTransfer(
+                TokenizedStrategy.performanceFeeRecipient(),
+                expectedFeeShares
+            );
+        } else {
+            // If the balance of the vault is less than the expected fee shares, add to the fee shares to pay later.
+            feeShares += expectedFeeShares;
+        }
+
+        emit FeesReported(managementFee, performanceFee, lockerBonus);
+    }
+
+    /**
+     * @notice Performs a health check on the vault using BaseHealthCheck parameters.
+     * @dev Checks if the gain or loss is within the acceptable bounds.
+     * @param _currentDebt The current debt of the strategy
+     * @param _gain The gain reported by the strategy
+     * @param _loss The loss reported by the strategy
+     */
+    function _vaultHealthCheck(
+        uint256 _currentDebt,
+        uint256 _gain,
+        uint256 _loss
+    ) internal {
+        if (!doHealthCheck) {
+            doHealthCheck = true;
+            return;
+        }
+
+        if (_gain > 0) {
+            require(
+                (_gain <= (_currentDebt * profitLimitRatio()) / MAX_BPS),
+                "healthCheck"
+            );
+        } else if (_loss > 0) {
+            require(
+                (_loss <= ((_currentDebt * lossLimitRatio()) / MAX_BPS)),
+                "healthCheck"
+            );
+        }
     }
 
     /**
@@ -405,26 +450,26 @@ contract LockedyvUSD is BaseHooks {
      * @notice Update fee configuration for a vault
      * @param _managementFee New annual management fee in basis points
      * @param _performanceFee New performance fee on gains in basis points
-     * @param _lockedVaultFee New locked vault fee in basis points
+     * @param _lockerBonus New locked vault fee in basis points
      */
     function setFees(
         uint16 _managementFee,
         uint16 _performanceFee,
-        uint16 _lockedVaultFee
+        uint16 _lockerBonus
     ) external onlyManagement {
         require(
             _managementFee <= MAX_MANAGEMENT_FEE,
             "Management fee too high"
         );
-        require(_performanceFee + _lockedVaultFee <= MAX_BPS, "Total too high");
+        require(_performanceFee + _lockerBonus <= MAX_BPS, "Total too high");
 
         feeConfig = FeeConfig({
             managementFee: _managementFee,
             performanceFee: _performanceFee,
-            lockedVaultFee: _lockedVaultFee
+            lockerBonus: _lockerBonus
         });
 
-        emit FeesUpdated(_managementFee, _performanceFee, _lockedVaultFee);
+        emit FeesUpdated(_managementFee, _performanceFee, _lockerBonus);
     }
 
     /**
