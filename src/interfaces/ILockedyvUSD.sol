@@ -7,7 +7,7 @@ import {IBaseHealthCheck} from "@periphery/Bases/HealthCheck/IBaseHealthCheck.so
  * @dev Provides access to the LockedyvUSD contract's functions
  */
 interface ILockedyvUSD is IBaseHealthCheck {
-     event CooldownDurationUpdated(uint256 indexed newCooldownDuration);
+    event CooldownDurationUpdated(uint256 indexed newCooldownDuration);
     event WithdrawalWindowUpdated(uint256 indexed newWithdrawalWindow);
     event CooldownStarted(
         address indexed user,
@@ -56,7 +56,9 @@ interface ILockedyvUSD is IBaseHealthCheck {
     function withdrawalWindow() external view returns (uint256);
 
     /// @notice Mapping of user addresses to their cooldown status
-    function cooldowns(address _user) external view returns (UserCooldown memory);
+    function cooldowns(
+        address _user
+    ) external view returns (UserCooldown memory);
 
     /// @notice Starts the cooldown for a user
     function startCooldown(address _user, uint256 _shares) external;
@@ -64,7 +66,12 @@ interface ILockedyvUSD is IBaseHealthCheck {
     /// @notice Cancels the cooldown for a user
     function cancelCooldown(address _user) external;
 
-    function getCooldownStatus(address _user) external view returns (uint256 cooldownEnd, uint256 windowEnd, uint256 shares);
+    function getCooldownStatus(
+        address _user
+    )
+        external
+        view
+        returns (uint256 cooldownEnd, uint256 windowEnd, uint256 shares);
 
     function withdrawFees() external;
 
@@ -78,9 +85,16 @@ interface ILockedyvUSD is IBaseHealthCheck {
     function setWithdrawalWindow(uint256 _withdrawalWindow) external;
 
     /// @notice Sets the fee configuration
-    function setFees(uint16 _managementFee, uint16 _performanceFee, uint16 _lockerBonus) external;
+    function setFees(
+        uint16 _managementFee,
+        uint16 _performanceFee,
+        uint16 _lockerBonus
+    ) external;
 
     /// @notice Reports the gain and loss of the strategy
-    function report(address _strategy, uint256 _gain, uint256 _loss) external returns (uint256 _fees, uint256 _refunds);
-    
+    function report(
+        address _strategy,
+        uint256 _gain,
+        uint256 _loss
+    ) external returns (uint256 _fees, uint256 _refunds);
 }

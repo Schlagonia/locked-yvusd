@@ -165,22 +165,22 @@ contract LockedyvUSD is BaseHooks {
             managementFee = _gain - (performanceFee + lockerBonus);
         }
 
-        if (_fees == 0) {
-            return (0, 0);
-        }
+        if (_fees == 0) return (0, 0);
 
         // Get the expected fee shares based on the fees reported.
-        uint256 expectedFeeShares = getExpectedShares(_fees) *
-            ((performanceFee + managementFee) / _fees);
+        uint256 expectedFeeShares = (getExpectedShares(_fees) *
+            (performanceFee + managementFee)) / _fees;
 
         if (asset.balanceOf(address(this)) >= expectedFeeShares) {
-            // If the balance of the vault is greater than the expected fee shares, transfer the fee shares to the performance fee recipient.
+            // If the balance of the vault is greater than the expected fee shares,
+            // transfer the fee shares to the performance fee recipient.
             asset.safeTransfer(
                 TokenizedStrategy.performanceFeeRecipient(),
                 expectedFeeShares
             );
         } else {
-            // If the balance of the vault is less than the expected fee shares, add to the fee shares to pay later.
+            // If the balance of the vault is less than the expected fee shares,
+            // add to the fee shares to pay later.
             feeShares += expectedFeeShares;
         }
 
@@ -228,7 +228,7 @@ contract LockedyvUSD is BaseHooks {
     function getExpectedShares(uint256 _fees) public view returns (uint256) {
         if (_fees == 0) return 0;
 
-        uint256 totalShares = IVault(msg.sender).convertToShares(_fees);
+        uint256 totalShares = IVault(address(asset)).convertToShares(_fees);
         (uint16 protocolFee, ) = VAULT_FACTORY.protocol_fee_config(
             address(asset)
         );
@@ -441,7 +441,7 @@ contract LockedyvUSD is BaseHooks {
     function setWithdrawalWindow(
         uint256 _withdrawalWindow
     ) external onlyManagement {
-        require(_withdrawalWindow > 1 days, "Withdrawal window too short");
+        require(_withdrawalWindow >= 1 days, "Withdrawal window too short");
         withdrawalWindow = _withdrawalWindow;
         emit WithdrawalWindowUpdated(withdrawalWindow);
     }
