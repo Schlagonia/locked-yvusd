@@ -56,6 +56,11 @@ contract FeeSplitter is Governance {
         address _receiver,
         uint256 _newSplit
     ) external onlyGovernance {
+        require(
+            _receiver != address(0) && _receiver != address(this),
+            "invalid receiver"
+        );
+
         uint256 oldSplit;
         // If the receiver is new to this token add them.
         if (!containsReceiver(_token, _receiver)) {

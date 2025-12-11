@@ -133,7 +133,6 @@ contract LockedyvUSD is BaseHooks {
 
         _vaultHealthCheck(strategyParams.current_debt, _gain, _loss);
 
-        // Charge management fees no matter gain or loss.
         uint256 managementFee;
         uint256 performanceFee;
         uint256 lockerBonus;
@@ -507,5 +506,9 @@ contract LockedyvUSD is BaseHooks {
         uint256 amount = feeShares;
         feeShares = 0;
         asset.safeTransfer(_receiver, amount);
+    }
+
+    function symbol() external pure returns (string memory) {
+        return "l-yvUSD";
     }
 }
