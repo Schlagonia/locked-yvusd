@@ -41,15 +41,12 @@ contract LockerZapper {
     );
 
     /**
-     * @notice Initialize the zapper with the relevant contract addresses
-     * @param _asset The underlying base asset address
-     * @param _yvUSD The yvUSD vault address
+     * @notice Initialize the zapper with the relevant contract address
      * @param _lockedYvUSD The LockedyvUSD contract address
      */
-    constructor(address _asset, address _yvUSD, address _lockedYvUSD) {
-        require(_asset != address(0), "Invalid asset");
-        require(_yvUSD != address(0), "Invalid yvUSD");
-        require(_lockedYvUSD != address(0), "Invalid lockedYvUSD");
+    constructor(address _lockedYvUSD) {
+        address _yvUSD = IERC4626(_lockedYvUSD).asset();
+        address _asset = IERC4626(_yvUSD).asset();
 
         asset = IERC20(_asset);
         yvUSD = IERC4626(_yvUSD);

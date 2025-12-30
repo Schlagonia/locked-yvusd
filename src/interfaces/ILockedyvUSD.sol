@@ -60,11 +60,11 @@ interface ILockedyvUSD is IBaseHealthCheck {
         address _user
     ) external view returns (UserCooldown memory);
 
-    /// @notice Starts the cooldown for a user
-    function startCooldown(address _user, uint256 _shares) external;
+    /// @notice Starts the cooldown
+    function startCooldown(uint256 _shares) external;
 
-    /// @notice Cancels the cooldown for a user
-    function cancelCooldown(address _user) external;
+    /// @notice Cancels the cooldown
+    function cancelCooldown() external;
 
     function getCooldownStatus(
         address _user

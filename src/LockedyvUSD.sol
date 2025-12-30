@@ -142,7 +142,7 @@ contract LockedyvUSD is BaseHooks {
             if (fee.managementFee > 0) {
                 // Time since the last harvest.
                 uint256 duration = block.timestamp - strategyParams.last_report;
-                // managementFee is an annual amount, so charge based on the time passed.
+                // Management fee is an annual amount, so charge based on the time passed.
                 managementFee = ((strategyParams.current_debt *
                     duration *
                     (fee.managementFee)) /
@@ -171,15 +171,14 @@ contract LockedyvUSD is BaseHooks {
             (performanceFee + managementFee)) / _fees;
 
         if (asset.balanceOf(address(this)) >= expectedFeeShares) {
-            // If the balance of the vault is greater than the expected fee shares,
+            // If we have enough vault shares to cover the fees,
             // transfer the fee shares to the performance fee recipient.
             asset.safeTransfer(
                 TokenizedStrategy.performanceFeeRecipient(),
                 expectedFeeShares
             );
         } else {
-            // If the balance of the vault is less than the expected fee shares,
-            // add to the fee shares to pay later.
+            // If not add to the fee shares to pay later.
             feeShares += expectedFeeShares;
         }
 
@@ -259,7 +258,7 @@ contract LockedyvUSD is BaseHooks {
      * @dev Override from BaseHooks. Returns vault token balance minus accumulated fee shares.
      * @return Available balance that can be harvested
      */
-    function _harvestAndReport() internal override returns (uint256) {
+    function _harvestAndReport() internal view override returns (uint256) {
         return asset.balanceOf(address(this)) - feeShares;
     }
 
@@ -296,7 +295,7 @@ contract LockedyvUSD is BaseHooks {
 
     /**
      * @notice Prevent transfers during lock period or active cooldown
-     * @dev Override from BaseHooksUpgradeable to enforce lock and cooldown
+     * @dev Override from BaseHooks to enforce lock and cooldown
      * @param from Address transferring shares
      * @param to Address receiving shares
      * @param amount Amount of shares being transferred
@@ -305,7 +304,7 @@ contract LockedyvUSD is BaseHooks {
         address from,
         address to,
         uint256 amount
-    ) internal override {
+    ) internal view override {
         // Allow minting (from == 0) and burning (to == 0)
         if (from == address(0) || to == address(0)) return;
 
@@ -337,7 +336,6 @@ contract LockedyvUSD is BaseHooks {
         uint256 userBalance = TokenizedStrategy.balanceOf(msg.sender);
         require(shares <= userBalance, "Insufficient balance for cooldown");
 
-        // Read cooldown duration from ProtocolConfig
         uint256 cooldownPeriod = cooldownDuration;
 
         // Allow updating cooldown with new amount (overwrites previous)
@@ -397,7 +395,7 @@ contract LockedyvUSD is BaseHooks {
             return 0;
         }
 
-        // Within valid withdrawal window - check backing requirement
+        // Within valid withdrawal window, convert shares to assets
         return TokenizedStrategy.convertToAssets(cooldown.shares);
     }
 

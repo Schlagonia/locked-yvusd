@@ -17,15 +17,15 @@ contract FeeSplitter is Governance {
 
     /* ========== EVENTS ========== */
 
-    event ReceiverAdded(address token, address receiver);
-    event ReceiverRemoved(address token, address receiver);
+    event ReceiverAdded(address indexed token, address indexed receiver);
+    event ReceiverRemoved(address indexed token, address indexed receiver);
     event SplitUpdated(
-        address token,
-        address receiver,
+        address indexed token,
+        address indexed receiver,
         uint256 newSplit,
         uint256 newTotalSplit
     );
-    event TokenDistributed(address token, uint256 amount);
+    event TokenDistributed(address indexed token, uint256 amount);
 
     /* ========== STATE VARIABLES ========== */
 
@@ -101,7 +101,7 @@ contract FeeSplitter is Governance {
         emit ReceiverRemoved(_token, _receiver);
     }
 
-    function distributeMany(address[] memory _tokens) external {
+    function distributeMany(address[] calldata _tokens) external {
         for (uint256 i = 0; i < _tokens.length; i++) {
             distribute(_tokens[i]);
         }
@@ -117,7 +117,7 @@ contract FeeSplitter is Governance {
         require(tokenSplit.receivers.length() > 0, "No receivers configured");
 
         IERC20 token = IERC20(_token);
-        uint256 balance = token.balanceOf(address(this)) - 1;
+        uint256 balance = token.balanceOf(address(this));
 
         (
             address[] memory _receivers,
@@ -161,11 +161,10 @@ contract FeeSplitter is Governance {
         view
         returns (address[] memory receivers_, uint256[] memory splits_)
     {
-        uint256 length = getReceiversLength(_token);
         receivers_ = tokenSplits[_token].receivers.values();
-        splits_ = new uint256[](length);
+        splits_ = new uint256[](receivers_.length);
 
-        for (uint i = 0; i < length; i++) {
+        for (uint i = 0; i < receivers_.length; i++) {
             splits_[i] = tokenSplits[_token].splits[receivers_[i]];
         }
     }

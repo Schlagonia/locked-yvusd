@@ -8,7 +8,6 @@ import {IVault} from "@yearn-vaults/interfaces/IVault.sol";
 import {IVaultFactory} from "@yearn-vaults/interfaces/IVaultFactory.sol";
 import {Roles} from "@yearn-vaults/interfaces/Roles.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 contract LockerZapperTest is Test {
     // Core contracts
@@ -89,8 +88,6 @@ contract LockerZapperTest is Test {
 
         // Deploy zapper
         zapper = new LockerZapper(
-            address(asset),
-            address(yvUSD),
             address(lockedVault)
         );
         vm.label(address(zapper), "LockerZapper");
