@@ -53,10 +53,10 @@ contract LockerZapper {
         lockedYvUSD = IERC4626(_lockedYvUSD);
 
         // Approve yvUSD vault to spend asset
-        asset.approve(_yvUSD, type(uint256).max);
+        asset.forceApprove(_yvUSD, type(uint256).max);
 
         // Approve lockedYvUSD to spend yvUSD shares
-        IERC20(_yvUSD).approve(_lockedYvUSD, type(uint256).max);
+        IERC20(_yvUSD).forceApprove(_lockedYvUSD, type(uint256).max);
     }
 
     /**
@@ -107,7 +107,7 @@ contract LockerZapper {
      * @return assetAmount Amount of base asset received
      */
     function zapOut(uint256 _shares) external returns (uint256 assetAmount) {
-        return zapOut(_shares, msg.sender);
+        return zapOut(_shares, msg.sender, 0);
     }
 
     /**
@@ -122,6 +122,24 @@ contract LockerZapper {
     function zapOut(
         uint256 _shares,
         address _receiver
+    ) public returns (uint256 assetAmount) {
+        return zapOut(_shares, _receiver, 0);
+    }
+
+    /**
+     * @notice Zap out of LockedyvUSD to the base asset
+     * @dev Redeems LockedyvUSD shares for yvUSD shares, then redeems yvUSD shares for the base asset.
+     *      IMPORTANT: The user must have completed the cooldown period on LockedyvUSD before calling.
+     *      User must approve this contract to spend their LockedyvUSD shares.
+     * @param _shares Amount of LockedyvUSD shares to redeem (type(uint256).max for full balance)
+     * @param _receiver Address to receive the base asset
+     * @param _minAssetAmount Minimum amount of base asset to receive
+     * @return assetAmount Amount of base asset received
+     */
+    function zapOut(
+        uint256 _shares,
+        address _receiver,
+        uint256 _minAssetAmount
     ) public returns (uint256 assetAmount) {
         require(_receiver != address(0), "Invalid receiver");
 
@@ -142,6 +160,8 @@ contract LockerZapper {
 
         // Redeem yvUSD shares for base asset
         assetAmount = yvUSD.redeem(yvUSDShares, _receiver, address(this));
+
+        require(assetAmount >= _minAssetAmount, "Insufficient assets received");
 
         emit ZapOut(msg.sender, _shares, assetAmount);
     }

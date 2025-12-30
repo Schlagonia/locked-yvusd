@@ -117,7 +117,7 @@ contract LockedyvUSD is BaseHooks {
         address _strategy,
         uint256 _gain,
         uint256 _loss
-    ) external returns (uint256 _fees, uint256 _refunds) {
+    ) external returns (uint256 _fees, uint256) {
         require(msg.sender == address(asset), "only vault");
 
         FeeConfig memory fee = feeConfig;
