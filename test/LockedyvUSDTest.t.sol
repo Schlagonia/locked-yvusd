@@ -54,6 +54,7 @@ contract LockedyvUSDTest is Test {
         uint256 indexed performanceFee,
         uint256 indexed lockerBonus
     );
+    event WithdrawalWindowUpdated(uint256 indexed newWithdrawalWindow);
 
     function setUp() public {
         // Setup addresses
@@ -664,6 +665,51 @@ contract LockedyvUSDTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                    SET WITHDRAWAL WINDOW TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_setWithdrawalWindow() public {
+        uint256 newWindow = 10 days;
+        
+        vm.prank(management);
+        lockedVault.setWithdrawalWindow(newWindow);
+        
+        assertEq(lockedVault.withdrawalWindow(), newWindow, "Withdrawal window should be updated");
+    }
+
+    function test_setWithdrawalWindow_revertTooShort() public {
+        vm.prank(management);
+        vm.expectRevert("Withdrawal window too short");
+        lockedVault.setWithdrawalWindow(12 hours); // Less than 1 day
+    }
+
+    function test_setWithdrawalWindow_revertNotManagement() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        lockedVault.setWithdrawalWindow(7 days);
+    }
+
+    function test_setWithdrawalWindow_emitsEvent() public {
+        uint256 newWindow = 14 days;
+        
+        vm.expectEmit(true, false, false, true);
+        emit WithdrawalWindowUpdated(newWindow);
+        
+        vm.prank(management);
+        lockedVault.setWithdrawalWindow(newWindow);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            SYMBOL TEST
+    //////////////////////////////////////////////////////////////*/
+
+    function test_symbol() public view {
+        string memory expectedSymbol = "l-yvUSD";
+        string memory actualSymbol = ILockedyvUSD(address(lockedVault)).symbol();
+        assertEq(keccak256(bytes(actualSymbol)), keccak256(bytes(expectedSymbol)), "Symbol should match");
+    }
+
+    /*//////////////////////////////////////////////////////////////
                         HEALTH CHECK TESTS
     //////////////////////////////////////////////////////////////*/
 
@@ -744,6 +790,24 @@ contract LockedyvUSDTest is Test {
         assertGt(fees, 0, "Should calculate fees without health check");
     }
 
+    function test_healthCheck_zeroGainZeroLoss() public {
+        // Test health check when both gain and loss are zero
+        address strategy = _deployMockStrategyWithDebt(TEST_AMOUNT);
+
+        depositToVault(alice, TEST_AMOUNT);
+
+        // First report enables health check
+        vm.prank(address(yvUSD));
+        lockedVault.report(strategy, 0, 0);
+
+        // Second report with zero gain and zero loss should pass
+        vm.warp(block.timestamp + 1);
+        vm.roll(block.number + 1);
+        vm.prank(address(yvUSD));
+        (uint256 fees, ) = lockedVault.report(strategy, 0, 0);
+        assertEq(fees, 0, "Should have no fees with zero gain");
+    }
+
     function test_report_immediateFeeTransfer() public {
         // Test immediate fee transfer when vault has sufficient balance
         address strategy = _deployMockStrategyWithDebt(TEST_AMOUNT);
@@ -773,6 +837,83 @@ contract LockedyvUSDTest is Test {
         assertEq(recipientBalanceAfter, recipientBalanceBefore, "No fees transferred due to calculation bug");
         assertEq(lockedVault.feeShares(), 0, "Fee shares remain 0");
         assertGt(reportedFees, 0, "Fees are still reported");
+    }
+
+    function test_report_feesExceedGain() public {
+        // Test when calculated fees exceed the gain
+        // This happens when management fee + performance fee + locker bonus > gain
+        // Use maximum allowed management fee (200 = 2%) and high performance/locker fees
+        uint256 largeDebt = TEST_AMOUNT * 1000; // Very large debt for high management fee accumulation
+        address strategy = _deployMockStrategyWithDebt(largeDebt);
+
+        depositToVault(alice, TEST_AMOUNT);
+
+        // Set high fees - max management fee (200 = 2%), high performance (4000 = 40%), high locker (4000 = 40%)
+        // Total = 82% of gain, but with large debt and time, management fee can push total over 100%
+        vm.prank(management);
+        lockedVault.setFees(200, 4000, 4000); // Max management fee, 40% performance, 40% locker
+
+        // Warp time to accumulate significant management fees (multiple years)
+        vm.warp(block.timestamp + 730 days); // 2 years
+
+        // Small gain relative to the large debt
+        uint256 smallGain = largeDebt / 200; // 0.5% gain on large debt
+        deal(address(asset), strategy, largeDebt + smallGain);
+
+        vm.prank(address(yvUSD));
+        (uint256 totalFees, ) = lockedVault.report(strategy, smallGain, 0);
+
+        // Fees should be capped at the gain amount when calculated fees exceed gain
+        assertLe(totalFees, smallGain, "Fees should not exceed gain");
+        // Note: Due to integer division and timing, fees might be slightly less than gain
+        // The important thing is they don't exceed it
+    }
+
+    function test_report_zeroManagementFee() public {
+        // Test report when management fee is 0
+        address strategy = _deployMockStrategyWithDebt(TEST_AMOUNT);
+
+        depositToVault(alice, TEST_AMOUNT);
+
+        // Set management fee to 0
+        vm.prank(management);
+        lockedVault.setFees(0, PERFORMANCE_FEE, LOCKER_BONUS);
+
+        // Generate gains
+        uint256 gain = TEST_AMOUNT / 10; // 10% gain
+        deal(address(asset), strategy, TEST_AMOUNT + gain);
+
+        vm.prank(address(yvUSD));
+        (uint256 totalFees, ) = lockedVault.report(strategy, gain, 0);
+
+        // Should still calculate performance fee and locker bonus
+        uint256 expectedPerformanceFee = (gain * PERFORMANCE_FEE) / MAX_BPS;
+        uint256 expectedLockerBonus = (gain * LOCKER_BONUS) / MAX_BPS;
+        uint256 expectedTotalFees = expectedPerformanceFee + expectedLockerBonus;
+
+        assertEq(totalFees, expectedTotalFees, "Should calculate fees without management fee");
+        assertGt(totalFees, 0, "Should have fees even without management fee");
+    }
+
+    function test_report_zeroFeesAfterCalculation() public {
+        // Test when calculated fees are 0 (should return early)
+        address strategy = _deployMockStrategyWithDebt(TEST_AMOUNT);
+
+        depositToVault(alice, TEST_AMOUNT);
+
+        // Set all fees to 0
+        vm.prank(management);
+        lockedVault.setFees(0, 0, 0);
+
+        // Generate gains
+        uint256 gain = TEST_AMOUNT / 10; // 10% gain
+        deal(address(asset), strategy, TEST_AMOUNT + gain);
+
+        vm.prank(address(yvUSD));
+        (uint256 totalFees, ) = lockedVault.report(strategy, gain, 0);
+
+        // Should return 0 fees when all fees are 0
+        assertEq(totalFees, 0, "Should return 0 fees when all fees are 0");
     }
 
     function test_report_accumulateFeeShares() public {
