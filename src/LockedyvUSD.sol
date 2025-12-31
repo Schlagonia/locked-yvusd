@@ -294,8 +294,8 @@ contract LockedyvUSD is BaseHooks {
     }
 
     /**
-     * @notice Prevent transfers during lock period or active cooldown
-     * @dev Override from BaseHooks to enforce lock and cooldown
+     * @notice Prevent transfers during active cooldown
+     * @dev Override from BaseHooks to enforce cooldown
      * @param from Address transferring shares
      * @param to Address receiving shares
      * @param amount Amount of shares being transferred
@@ -372,9 +372,8 @@ contract LockedyvUSD is BaseHooks {
     function availableWithdrawLimit(
         address _owner
     ) public view override returns (uint256) {
-        // If cooldown is off or during shutdown, bypass all checks and return available assets
+        // If cooldown is off or during shutdown, bypass all checks and return max uint
         if (cooldownDuration == 0 || TokenizedStrategy.isShutdown()) {
-            // Return all available vault shares
             return type(uint256).max;
         }
 
