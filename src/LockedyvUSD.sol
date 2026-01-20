@@ -506,6 +506,6 @@ contract LockedyvUSD is BaseHooks {
     }
 
     function symbol() external pure returns (string memory) {
-        return "l-yvUSD";
+        return "Locked yvUSD";
     }
 }
