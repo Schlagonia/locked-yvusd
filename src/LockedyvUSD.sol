@@ -308,6 +308,9 @@ contract LockedyvUSD is BaseHooks {
         // Allow minting (from == 0) and burning (to == 0)
         if (from == address(0) || to == address(0)) return;
 
+        // Bypass cooldown checks when disabled or during shutdown
+        if (cooldownDuration == 0 || TokenizedStrategy.isShutdown()) return;
+
         // Check if user has active cooldown
         UserCooldown memory cooldown = cooldowns[from];
         if (cooldown.shares > 0) {
