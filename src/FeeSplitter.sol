@@ -125,15 +125,18 @@ contract FeeSplitter is Governance {
         ) = getReceiversAndSplits(_token);
 
         uint256 amount;
+        // Track actual paid amount for event.
+        uint256 paid;
         for (uint i = 0; i < _receivers.length; i++) {
             amount = (balance * _splits[i]) / BASIS_POINTS;
 
             if (amount > 0) {
                 token.safeTransfer(_receivers[i], amount);
+                paid += amount;
             }
         }
 
-        emit TokenDistributed(_token, balance);
+        emit TokenDistributed(_token, paid);
     }
 
     function rescue(
