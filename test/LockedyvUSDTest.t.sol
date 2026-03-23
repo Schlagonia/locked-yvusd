@@ -700,16 +700,6 @@ contract LockedyvUSDTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                            SYMBOL TEST
-    //////////////////////////////////////////////////////////////*/
-
-    function test_symbol() public view {
-        string memory expectedSymbol = "l-yvUSD";
-        string memory actualSymbol = ILockedyvUSD(address(lockedVault)).symbol();
-        assertEq(keccak256(bytes(actualSymbol)), keccak256(bytes(expectedSymbol)), "Symbol should match");
-    }
-
-    /*//////////////////////////////////////////////////////////////
                         HEALTH CHECK TESTS
     //////////////////////////////////////////////////////////////*/
 

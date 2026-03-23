@@ -8,6 +8,9 @@ import {IVault} from "@yearn-vaults/interfaces/IVault.sol";
 import {IVaultFactory} from "@yearn-vaults/interfaces/IVaultFactory.sol";
 import {Roles} from "@yearn-vaults/interfaces/Roles.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {Mock4626Strategy} from "./mocks/Mock4626Strategy.sol";
+import {Token} from "@yearn-vaults/test/Token.sol";
 
 contract LockerZapperTest is Test {
     // Core contracts
@@ -31,17 +34,9 @@ contract LockerZapperTest is Test {
     uint256 constant INITIAL_DEPOSIT = 1_000_000e6;
     uint256 constant TEST_AMOUNT = 10_000e6;
 
-    event ZapIn(
-        address indexed user,
-        uint256 indexed assetAmount,
-        uint256 indexed lockedShares
-    );
+    event ZapIn(address indexed user, uint256 indexed assetAmount, uint256 indexed lockedShares);
 
-    event ZapOut(
-        address indexed user,
-        uint256 indexed lockedShares,
-        uint256 indexed assetAmount
-    );
+    event ZapOut(address indexed user, uint256 indexed lockedShares, uint256 indexed assetAmount);
 
     function setUp() public {
         // Setup addresses
@@ -65,15 +60,8 @@ contract LockerZapperTest is Test {
 
         // Deploy yvUSD vault
         vm.startPrank(management);
-        yvUSD = IVault(
-            vaultFactory.deploy_new_vault(
-                address(asset),
-                "yvUSD Test Vault",
-                "yvUSD-TEST",
-                management,
-                7 days
-            )
-        );
+        yvUSD =
+            IVault(vaultFactory.deploy_new_vault(address(asset), "yvUSD Test Vault", "yvUSD-TEST", management, 7 days));
         vm.label(address(yvUSD), "yvUSD");
 
         // Deploy LockedyvUSD
@@ -87,9 +75,7 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         // Deploy zapper
-        zapper = new LockerZapper(
-            address(lockedVault)
-        );
+        zapper = new LockerZapper(address(lockedVault));
         vm.label(address(zapper), "LockerZapper");
 
         // Fund test users
@@ -109,16 +95,8 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         assertGt(lockedShares, 0, "Should receive locked shares");
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
-            lockedShares,
-            "Alice should have locked shares"
-        );
-        assertEq(
-            asset.balanceOf(alice),
-            INITIAL_DEPOSIT - TEST_AMOUNT,
-            "Asset should be deducted"
-        );
+        assertEq(IERC20(address(lockedVault)).balanceOf(alice), lockedShares, "Alice should have locked shares");
+        assertEq(asset.balanceOf(alice), INITIAL_DEPOSIT - TEST_AMOUNT, "Asset should be deducted");
     }
 
     function test_zapIn_defaultReceiver() public {
@@ -129,11 +107,7 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         assertGt(lockedShares, 0, "Should receive locked shares");
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
-            lockedShares,
-            "Alice should have locked shares"
-        );
+        assertEq(IERC20(address(lockedVault)).balanceOf(alice), lockedShares, "Alice should have locked shares");
     }
 
     function test_zapIn_maxAmount() public {
@@ -155,16 +129,8 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         assertGt(lockedShares, 0, "Should receive locked shares");
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(bob),
-            lockedShares,
-            "Bob should have locked shares"
-        );
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
-            0,
-            "Alice should have no locked shares"
-        );
+        assertEq(IERC20(address(lockedVault)).balanceOf(bob), lockedShares, "Bob should have locked shares");
+        assertEq(IERC20(address(lockedVault)).balanceOf(alice), 0, "Alice should have no locked shares");
     }
 
     function test_zapIn_emitsEvent() public {
@@ -221,16 +187,8 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         assertGt(assetsReceived, 0, "Should receive assets");
-        assertEq(
-            asset.balanceOf(alice),
-            assetsBefore + assetsReceived,
-            "Assets should be received"
-        );
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
-            0,
-            "Should have no locked shares left"
-        );
+        assertEq(asset.balanceOf(alice), assetsBefore + assetsReceived, "Assets should be received");
+        assertEq(IERC20(address(lockedVault)).balanceOf(alice), 0, "Should have no locked shares left");
     }
 
     function test_zapOut_defaultReceiver() public {
@@ -253,11 +211,7 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         assertGt(assetsReceived, 0, "Should receive assets");
-        assertEq(
-            asset.balanceOf(alice),
-            assetsBefore + assetsReceived,
-            "Assets should be received"
-        );
+        assertEq(asset.balanceOf(alice), assetsBefore + assetsReceived, "Assets should be received");
     }
 
     function test_zapOut_maxShares() public {
@@ -279,11 +233,46 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         assertGt(assetsReceived, 0, "Should receive assets");
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
-            0,
-            "Should have no locked shares left"
-        );
+        assertEq(IERC20(address(lockedVault)).balanceOf(alice), 0, "Should have no locked shares left");
+    }
+
+    function test_zapOut_maxShares_usesMaxWithdrawToAvoidDust() public {
+        vm.startPrank(alice);
+        asset.approve(address(zapper), TEST_AMOUNT);
+        uint256 aliceShares = zapper.zapIn(TEST_AMOUNT);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        asset.approve(address(zapper), TEST_AMOUNT);
+        zapper.zapIn(TEST_AMOUNT);
+        vm.stopPrank();
+
+        vm.startPrank(management);
+        IVault(address(lockedVault)).setProfitMaxUnlockTime(0);
+        deal(address(asset), management, 1);
+        asset.approve(address(yvUSD), 1);
+        uint256 donatedVaultShares = yvUSD.deposit(1, management);
+        IERC20(address(yvUSD)).transfer(address(lockedVault), donatedVaultShares);
+        lockedVault.report();
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        lockedVault.startCooldown(aliceShares);
+        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
+
+        uint256 maxWithdrawAssets = IERC4626(address(lockedVault)).maxWithdraw(alice);
+        uint256 maxRedeemShares = IERC4626(address(lockedVault)).maxRedeem(alice);
+
+        assertEq(maxWithdrawAssets, TEST_AMOUNT, "maxWithdraw should preserve the full asset exit");
+        assertEq(maxRedeemShares, aliceShares - 1, "maxRedeem rounds down and leaves dust");
+
+        IERC20(address(lockedVault)).approve(address(zapper), type(uint256).max);
+
+        uint256 assetsReceived = zapper.zapOut(type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(assetsReceived, TEST_AMOUNT, "Should withdraw the full asset amount");
+        assertEq(IERC20(address(lockedVault)).balanceOf(alice), 0, "Should burn all locked shares");
     }
 
     function test_zapOut_differentReceiver() public {
@@ -306,11 +295,7 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         assertGt(assetsReceived, 0, "Should receive assets");
-        assertEq(
-            asset.balanceOf(bob),
-            bobAssetsBefore + assetsReceived,
-            "Bob should receive assets"
-        );
+        assertEq(asset.balanceOf(bob), bobAssetsBefore + assetsReceived, "Bob should receive assets");
     }
 
     function test_zapOut_revertBeforeCooldown() public {
@@ -406,17 +391,8 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         // Should get back approximately same amount (no gains/losses in this simple test)
-        assertApproxEqRel(
-            assetsReceived,
-            TEST_AMOUNT,
-            0.01e18,
-            "Should get back approximately same amount"
-        );
-        assertEq(
-            asset.balanceOf(alice),
-            initialBalance - TEST_AMOUNT + assetsReceived,
-            "Balance should be correct"
-        );
+        assertApproxEqRel(assetsReceived, TEST_AMOUNT, 0.01e18, "Should get back approximately same amount");
+        assertEq(asset.balanceOf(alice), initialBalance - TEST_AMOUNT + assetsReceived, "Balance should be correct");
     }
 
     function test_multipleUsers_zapInOut() public {
@@ -449,11 +425,34 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
 
         // Bob should get approximately 2x Alice (since he deposited 2x)
-        assertApproxEqRel(
-            bobAssets,
-            aliceAssets * 2,
-            0.01e18,
-            "Bob should get 2x Alice's assets"
-        );
+        assertApproxEqRel(bobAssets, aliceAssets * 2, 0.01e18, "Bob should get 2x Alice's assets");
+    }
+
+    function test_zapper_canBeReusedForYvBTCStyleVault() public {
+        Token wbtc = new Token("WBTC", 8);
+        Mock4626Strategy yvBTC = new Mock4626Strategy(IERC20(address(wbtc)), "yvBTC Test Vault", "yvBTC-TEST");
+        LockedyvUSD lockedYvBTC = new LockedyvUSD(address(yvBTC), "Locked yvBTC");
+        LockerZapper btcZapper = new LockerZapper(address(lockedYvBTC));
+        address satoshi = makeAddr("satoshi");
+        uint256 depositAmount = 1e8;
+
+        wbtc.mint(satoshi, depositAmount);
+
+        vm.startPrank(satoshi);
+        IERC20(address(wbtc)).approve(address(btcZapper), depositAmount);
+
+        uint256 lockedShares = btcZapper.zapIn(depositAmount);
+        lockedYvBTC.startCooldown(lockedShares);
+
+        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
+
+        IERC20(address(lockedYvBTC)).approve(address(btcZapper), type(uint256).max);
+
+        uint256 assetsReceived = btcZapper.zapOut(type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(assetsReceived, depositAmount, "Should round-trip the BTC-style vault");
+        assertEq(IERC20(address(lockedYvBTC)).balanceOf(satoshi), 0, "Should clear locked shares");
+        assertEq(wbtc.balanceOf(satoshi), depositAmount, "Should return the base asset");
     }
 }
