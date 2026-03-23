@@ -8,7 +8,6 @@ import {ILockedyvUSD} from "../src/interfaces/ILockedyvUSD.sol";
 import {LockerZapper} from "../src/LockerZapper.sol";
 
 contract DeployScript is Script {
-
     address public yvUSD = 0x696d02Db93291651ED510704c9b286841d506987;
 
     address public governance = 0x1b5f15DCb82d25f91c65b53CEe151E8b9fBdD271;
@@ -40,7 +39,7 @@ contract DeployScript is Script {
         lockedyvUSD.setFees(25, 1_000, 1_000);
 
         // Deploy LockerZapper
-        LockerZapper lockerZapper = new LockerZapper(address(lockedVault));
+        LockerZapper lockerZapper = new LockerZapper(governance);
         console.log("LockerZapper deployed at:", address(lockerZapper));
 
         vm.stopBroadcast();
