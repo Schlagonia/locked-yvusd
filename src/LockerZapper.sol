@@ -126,12 +126,14 @@ contract LockerZapper is Governance {
             );
         } else {
             uint256 vaultShares = _depositWithReferral(
+                _asset,
                 _vault,
                 _amount,
                 address(this),
                 _referrer
             );
             stakedShares = _depositWithReferral(
+                IERC20(address(_vault)),
                 _stakingVault,
                 vaultShares,
                 _receiver,
@@ -267,12 +269,12 @@ contract LockerZapper is Governance {
     }
 
     function _depositWithReferral(
+        IERC20 _depositAsset,
         IERC4626 _vault,
         uint256 _assets,
         address _receiver,
         address _referrer
     ) internal returns (uint256 shares) {
-        IERC20 _depositAsset = IERC20(_vault.asset());
         _depositAsset.forceApprove(address(REFERRAL_DEPOSIT_WRAPPER), _assets);
         shares = REFERRAL_DEPOSIT_WRAPPER.depositWithReferral(
             address(_vault),
