@@ -20,12 +20,7 @@ contract FeeSplitterTest is Test {
 
     event ReceiverAdded(address indexed token, address indexed receiver);
     event ReceiverRemoved(address indexed token, address indexed receiver);
-    event SplitUpdated(
-        address indexed token,
-        address indexed receiver,
-        uint256 newSplit,
-        uint256 newTotalSplit
-    );
+    event SplitUpdated(address indexed token, address indexed receiver, uint256 newSplit, uint256 newTotalSplit);
     event TokenDistributed(address indexed token, uint256 amount);
 
     function setUp() public {
@@ -123,7 +118,7 @@ contract FeeSplitterTest is Test {
     function test_updateSplit_revertExceedsMax() public {
         vm.startPrank(governance);
         splitter.updateSplit(address(token), alice, 5000);
-        
+
         vm.expectRevert("Total split exceeds maximum");
         splitter.updateSplit(address(token), bob, 6000); // Would exceed 100%
         vm.stopPrank();
@@ -137,7 +132,7 @@ contract FeeSplitterTest is Test {
         vm.startPrank(governance);
         splitter.updateSplit(address(token), alice, 5000);
         splitter.updateSplit(address(token), bob, 5000);
-        
+
         splitter.removeReceiver(address(token), alice);
         vm.stopPrank();
 
@@ -150,11 +145,11 @@ contract FeeSplitterTest is Test {
         vm.startPrank(governance);
         splitter.updateSplit(address(token), alice, 5000);
         vm.stopPrank();
-        
+
         vm.startPrank(governance);
         vm.expectEmit(true, true, true, true);
         emit ReceiverRemoved(address(token), alice);
-        
+
         splitter.removeReceiver(address(token), alice);
         vm.stopPrank();
     }
@@ -181,15 +176,9 @@ contract FeeSplitterTest is Test {
         splitter.distribute(address(token));
 
         assertEq(
-            token.balanceOf(alice),
-            aliceBalanceBefore + (TEST_AMOUNT * 6000) / BASIS_POINTS,
-            "Alice should receive 60%"
+            token.balanceOf(alice), aliceBalanceBefore + (TEST_AMOUNT * 6000) / BASIS_POINTS, "Alice should receive 60%"
         );
-        assertEq(
-            token.balanceOf(bob),
-            bobBalanceBefore + (TEST_AMOUNT * 4000) / BASIS_POINTS,
-            "Bob should receive 40%"
-        );
+        assertEq(token.balanceOf(bob), bobBalanceBefore + (TEST_AMOUNT * 4000) / BASIS_POINTS, "Bob should receive 40%");
         assertEq(token.balanceOf(address(splitter)), 0, "Splitter should have no tokens left");
     }
 
@@ -242,11 +231,11 @@ contract FeeSplitterTest is Test {
 
         assertEq(receivers.length, 2, "Should have 2 receivers");
         assertEq(splits.length, 2, "Should have 2 splits");
-        
+
         // Check that alice and bob are in the receivers array
         bool foundAlice = false;
         bool foundBob = false;
-        for (uint i = 0; i < receivers.length; i++) {
+        for (uint256 i = 0; i < receivers.length; i++) {
             if (receivers[i] == alice) {
                 assertEq(splits[i], 3000, "Alice should have 30% split");
                 foundAlice = true;
@@ -311,4 +300,3 @@ contract FeeSplitterTest is Test {
         splitter.rescue(address(token), alice);
     }
 }
-

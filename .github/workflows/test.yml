@@ -7,6 +7,7 @@ on:
 
 env:
   FOUNDRY_PROFILE: ci
+  ETH_RPC_URL: https://ethereum-rpc.publicnode.com
 
 jobs:
   check:
@@ -36,5 +37,5 @@ jobs:
 
       - name: Run Forge tests
         run: |
-          forge test -vvv
+          forge test -vvv --fork-url $ETH_RPC_URL
         id: test

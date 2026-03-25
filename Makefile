@@ -15,7 +15,7 @@ FORK_URL := ${ETH_RPC_URL} # BASE_RPC_URL, ETH_RPC_URL, ARBITRUM_RPC_URL
 # if we want to run only matching tests, set that here
 test := test_
 
-# local tests without fork
+# forked tests
 tests  :; forge test -vv --fork-url ${FORK_URL}
 trace  :; forge test -vvv --fork-url ${FORK_URL}
 gas  :; forge test --fork-url ${FORK_URL} --gas-report

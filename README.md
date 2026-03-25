@@ -1,10 +1,10 @@
-# LockedyvUSD
+# Locked Vault
 
-A Yearn V3 vault hook that implements cooldown periods for withdrawals.
+A generic locked wrapper for Yearn V3 vaults.
 
 ## Overview
 
-LockedyvUSD is a hook contract that wraps yvUSD vault shares and enforces a cooldown period before withdrawals. Users must:
+The locked vault accepts the underlying asset for a target Yearn vault, compounds it through that vault, and enforces a cooldown period before withdrawals. Users must:
 1. Start a cooldown period (default: 14 days)
 2. Wait for the cooldown to expire
 3. Withdraw within the withdrawal window (default: 7 days)
@@ -21,8 +21,9 @@ cp .env.example .env
 
 Edit `.env`:
 - `ETH_RPC_URL`: Your Ethereum RPC endpoint
-- `YVUSD_ADDRESS`: The yvUSD vault address to connect to
-- `LOCKED_TOKEN_NAME`: Name for the locked token (optional)
+- `WRAPPED_VAULT`: The Yearn vault address to wrap
+- `GOVERNANCE`: Governance address for the fee splitter
+- `LOCKED_TOKEN_NAME`: Name for the locked token
 - `PRIVATE_KEY`: Your deployer private key
 
 ### 2. Deploy
@@ -44,6 +45,8 @@ Run all tests:
 make tests
 ```
 
+These tests are forked. They need `ETH_RPC_URL`.
+
 Run specific test:
 ```bash
 make test-test test=test_name
@@ -51,7 +54,7 @@ make test-test test=test_name
 
 ## Configuration After Deployment
 
-After deployment, the management address needs to configure:
+After deployment, management still needs to point the wrapped vault's accountant at the new locked vault and then configure:
 
 1. Set cooldown duration (default: 14 days)
 ```solidity
