@@ -3,14 +3,17 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {LockedVault} from "../src/LockedVault.sol";
+import {LockedVaultAccountant} from "../src/LockedVaultAccountant.sol";
 import {FeeSplitter} from "../src/FeeSplitter.sol";
+import {LockerZapper} from "../src/LockerZapper.sol";
 import {ILockedVault} from "../src/interfaces/ILockedVault.sol";
 
 contract DeployScript is Script {
     function run() external {
-        address wrappedVault = vm.envAddress("WRAPPED_VAULT");
-        address governance = vm.envAddress("GOVERNANCE");
-        string memory name = vm.envOr("LOCKED_TOKEN_NAME", string("Locked Vault"));
+        address wrappedVault;
+        address governance;
+        string memory name;
+        address accountant;
 
         vm.startBroadcast();
 
@@ -20,15 +23,23 @@ contract DeployScript is Script {
         console.log("Connected to wrapped vault at:", wrappedVault);
         console.log("Token name:", name);
 
-        FeeSplitter feeSplitter = new FeeSplitter(governance);
-        console.log("FeeSplitter deployed at:", address(feeSplitter));
+        if (accountant == address(0)) {
+            LockedVaultAccountant accountant = new LockedVaultAccountant(
+                governance
+            );
+            console.log("LockedVaultAccountant deployed at:", address(accountant));
+        } else {
+            console.log("LockedVaultAccountant already deployed at:", accountant);
+        }
 
         ILockedVault lockedStrategy = ILockedVault(address(lockedVault));
 
         lockedStrategy.setPerformanceFee(0);
         lockedStrategy.setPerformanceFeeRecipient(address(feeSplitter));
-        lockedStrategy.setProfitMaxUnlockTime(7 days);
-        lockedStrategy.setFees(25, 1_000, 1_000);
+        lockedStrategy.setProfitMaxUnlockTime(3 days);
+
+        LockerZapper lockerZapper = new LockerZapper();
+        console.log("LockerZapper deployed at:", address(lockerZapper));
         vm.stopBroadcast();
     }
 }

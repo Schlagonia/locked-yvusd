@@ -9,7 +9,7 @@ interface IAprOracleCore {
     function setOracle(address _strategy, address _oracle) external;
 }
 
-contract DeployLockedyvUSDAprOracle is Script {
+contract DeployLockedVaultAprOracle is Script {
     function run() external {
         address aprOracle = vm.envAddress("APR_ORACLE");
         address lockedVault = vm.envAddress("LOCKED_VAULT");

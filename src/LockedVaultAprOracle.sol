@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0
 pragma solidity ^0.8.24;
 
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
-
+import {IVault} from "@yearn-vaults/interfaces/IVault.sol";
 import {ILockedVault} from "./interfaces/ILockedVault.sol";
+import {ILockedVaultAccountant} from "./interfaces/ILockedVaultAccountant.sol";
 
 interface IAprOracle {
     function getStrategyApr(
@@ -24,15 +24,18 @@ contract LockedVaultAprOracle {
         int256 _delta
     ) external view returns (uint256) {
         ILockedVault lockedVault = ILockedVault(_strategy);
-        IERC4626 yearnVault = IERC4626(lockedVault.vault());
+        IVault yearnVault = IVault(lockedVault.vault());
 
-        uint256 baseApr = APR_ORACLE.getStrategyApr(address(yearnVault), 0);
+        uint256 baseApr = APR_ORACLE.getStrategyApr(
+            address(yearnVault),
+            _delta
+        );
         if (baseApr == 0) {
             return 0;
         }
 
-        uint256 totalVaultShares = yearnVault.totalSupply();
-        if (totalVaultShares == 0) {
+        int256 totalVaultAssets = int256(yearnVault.totalAssets()) + _delta;
+        if (totalVaultAssets <= 0) {
             return 0;
         }
 
@@ -41,21 +44,22 @@ contract LockedVaultAprOracle {
             return 0;
         }
 
-        uint256 lockedVaultShares = yearnVault.convertToShares(
-            uint256(lockedAssets)
+        address accountant = yearnVault.accountant();
+        if (accountant == address(0)) {
+            return baseApr;
+        }
+
+        uint256 lockerBonus = ILockedVaultAccountant(accountant).lockerBonus(
+            address(yearnVault)
         );
-        if (lockedVaultShares == 0) {
-            return 0;
+        if (lockerBonus == 0) {
+            return baseApr;
         }
 
-        uint256 lockerBonusBps = lockedVault.feeConfig().lockerBonus;
-        if (lockerBonusBps == 0) {
-            return 0;
-        }
+        uint256 lockedRatio = (uint256(lockedAssets) * ONE) /
+            uint256(totalVaultAssets);
+        uint256 bonusApr = (baseApr * lockerBonus) / MAX_BPS;
 
-        uint256 lockedRatio = (lockedVaultShares * ONE) / totalVaultShares;
-        uint256 bonusApr = (baseApr * lockerBonusBps) / MAX_BPS;
-
-        return (bonusApr * ONE) / lockedRatio;
+        return baseApr + (bonusApr * ONE) / lockedRatio;
     }
 }

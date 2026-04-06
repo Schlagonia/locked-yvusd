@@ -4,19 +4,13 @@ pragma solidity ^0.8.24;
 import {BaseStrategy} from "@tokenized-strategy/BaseStrategy.sol";
 import {BaseHooks, ERC20} from "@periphery/Bases/Hooks/BaseHooks.sol";
 import {Base4626Compounder} from "@periphery/Bases/4626Compounder/Base4626Compounder.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {IVault} from "@yearn-vaults/interfaces/IVault.sol";
-import {IVaultFactory} from "@yearn-vaults/interfaces/IVaultFactory.sol";
 
-interface IVaultCorrected {
-    function FACTORY() external view returns (address);
-}
+import {ILockedVaultAccountant} from "./interfaces/ILockedVaultAccountant.sol";
 
 contract LockedVault is BaseHooks, Base4626Compounder {
-    using SafeERC20 for ERC20;
-
     event CooldownDurationUpdated(uint256 indexed newCooldownDuration);
     event WithdrawalWindowUpdated(uint256 indexed newWithdrawalWindow);
     event CooldownStarted(
@@ -25,16 +19,6 @@ contract LockedVault is BaseHooks, Base4626Compounder {
         uint256 indexed timestamp
     );
     event CooldownCancelled(address indexed user);
-    event FeesUpdated(
-        uint256 indexed managementFee,
-        uint256 indexed performanceFee,
-        uint256 indexed lockerBonus
-    );
-    event FeesReported(
-        uint256 indexed managementFee,
-        uint256 indexed performanceFee,
-        uint256 indexed lockerBonus
-    );
 
     struct UserCooldown {
         uint64 cooldownEnd;
@@ -42,158 +26,30 @@ contract LockedVault is BaseHooks, Base4626Compounder {
         uint128 shares;
     }
 
-    struct FeeConfig {
-        uint16 managementFee;
-        uint16 performanceFee;
-        uint16 lockerBonus;
-    }
-
-    uint256 internal constant MAX_MANAGEMENT_FEE = 200;
     uint256 public constant MAX_COOLDOWN_DURATION = 30 days;
-    uint256 internal constant SECS_PER_YEAR = 31_556_952;
+    address public constant GOVERNANCE =
+        0x88Ba032be87d5EF1fbE87336B7090767F367BF73;
 
-    IVaultFactory public immutable VAULT_FACTORY;
-
-    uint256 public feeShares;
-    FeeConfig public feeConfig;
     uint256 public cooldownDuration;
+
     uint256 public withdrawalWindow;
 
     mapping(address => UserCooldown) public cooldowns;
+
+    modifier onlyGovernance() {
+        require(msg.sender == GOVERNANCE, "Not governance");
+        _;
+    }
 
     constructor(
         address _vault,
         string memory _name
     ) Base4626Compounder(IERC4626(_vault).asset(), _name, _vault) {
-        VAULT_FACTORY = IVaultFactory(IVaultCorrected(_vault).FACTORY());
-
         cooldownDuration = 14 days;
         withdrawalWindow = 7 days;
 
         emit CooldownDurationUpdated(cooldownDuration);
         emit WithdrawalWindowUpdated(withdrawalWindow);
-    }
-
-    function report(
-        address _strategy,
-        uint256 _gain,
-        uint256 _loss
-    ) external returns (uint256 _fees, uint256 _refunds) {
-        require(msg.sender == address(vault), "only vault");
-
-        FeeConfig memory fee = feeConfig;
-        IVault.StrategyParams memory strategyParams = IVault(msg.sender)
-            .strategies(_strategy);
-
-        require(
-            strategyParams.last_report != block.timestamp,
-            "already reported"
-        );
-
-        _vaultHealthCheck(strategyParams.current_debt, _gain, _loss);
-
-        if (_gain == 0) {
-            return (0, 0);
-        }
-
-        uint256 managementFee;
-        if (fee.managementFee > 0) {
-            uint256 duration = block.timestamp - strategyParams.last_report;
-            managementFee =
-                (strategyParams.current_debt * duration * fee.managementFee) /
-                MAX_BPS /
-                SECS_PER_YEAR;
-        }
-
-        uint256 performanceFee = (_gain * fee.performanceFee) / MAX_BPS;
-        uint256 lockerBonus = (_gain * fee.lockerBonus) / MAX_BPS;
-
-        _fees = managementFee + performanceFee + lockerBonus;
-
-        if (_fees > _gain) {
-            _fees = _gain;
-            managementFee = _gain - (performanceFee + lockerBonus);
-        }
-
-        if (_fees == 0) {
-            return (0, 0);
-        }
-
-        uint256 expectedFeeShares = (getExpectedShares(_fees) *
-            (performanceFee + managementFee)) / _fees;
-
-        if (balanceOfVault() >= expectedFeeShares) {
-            ERC20(address(vault)).safeTransfer(
-                TokenizedStrategy.performanceFeeRecipient(),
-                expectedFeeShares
-            );
-        } else {
-            feeShares += expectedFeeShares;
-        }
-
-        emit FeesReported(managementFee, performanceFee, lockerBonus);
-        return (_fees, 0);
-    }
-
-    function _vaultHealthCheck(
-        uint256 _currentDebt,
-        uint256 _gain,
-        uint256 _loss
-    ) internal {
-        if (!doHealthCheck) {
-            doHealthCheck = true;
-            return;
-        }
-
-        if (_gain > 0) {
-            require(
-                _gain <= (_currentDebt * profitLimitRatio()) / MAX_BPS,
-                "healthCheck"
-            );
-        } else if (_loss > 0) {
-            require(
-                _loss <= (_currentDebt * lossLimitRatio()) / MAX_BPS,
-                "healthCheck"
-            );
-        }
-    }
-
-    function getExpectedShares(uint256 _fees) public view returns (uint256) {
-        if (_fees == 0) {
-            return 0;
-        }
-
-        uint256 totalShares = IVault(address(vault)).convertToShares(_fees);
-        (uint16 protocolFee, ) = VAULT_FACTORY.protocol_fee_config(
-            address(vault)
-        );
-
-        if (protocolFee > 0) {
-            totalShares -= (totalShares * protocolFee) / MAX_BPS;
-        }
-
-        return totalShares;
-    }
-
-    function balanceOfVault() public view override returns (uint256) {
-        uint256 rawBalance = ERC20(address(vault)).balanceOf(address(this));
-        if (rawBalance <= feeShares) {
-            return 0;
-        }
-
-        return rawBalance - feeShares;
-    }
-
-    function vaultsMaxWithdraw() public view override returns (uint256) {
-        uint256 maxRedeemShares = IERC4626(address(vault)).maxRedeem(
-            address(this)
-        );
-        uint256 availableShares = balanceOfVault() + balanceOfStake();
-        if (maxRedeemShares > availableShares) {
-            maxRedeemShares = availableShares;
-        }
-
-        return IERC4626(address(vault)).convertToAssets(maxRedeemShares);
     }
 
     function availableDepositLimit(
@@ -273,7 +129,7 @@ contract LockedVault is BaseHooks, Base4626Compounder {
 
     function setCooldownDuration(
         uint256 _cooldownDuration
-    ) external onlyManagement {
+    ) external onlyGovernance {
         require(
             _cooldownDuration <= MAX_COOLDOWN_DURATION,
             "Cooldown duration too long"
@@ -284,50 +140,19 @@ contract LockedVault is BaseHooks, Base4626Compounder {
 
     function setWithdrawalWindow(
         uint256 _withdrawalWindow
-    ) external onlyManagement {
+    ) external onlyGovernance {
         require(_withdrawalWindow >= 1 days, "Withdrawal window too short");
         withdrawalWindow = _withdrawalWindow;
         emit WithdrawalWindowUpdated(_withdrawalWindow);
     }
 
-    function setFees(
-        uint16 _managementFee,
-        uint16 _performanceFee,
-        uint16 _lockerBonus
-    ) external onlyManagement {
-        require(
-            _managementFee <= MAX_MANAGEMENT_FEE,
-            "Management fee too high"
-        );
-        require(_performanceFee + _lockerBonus <= MAX_BPS, "Total too high");
+    function _preReportHook() internal override {
+        address accountant = IVault(address(vault)).accountant();
+        if (accountant == address(0)) {
+            return;
+        }
 
-        feeConfig = FeeConfig({
-            managementFee: _managementFee,
-            performanceFee: _performanceFee,
-            lockerBonus: _lockerBonus
-        });
-
-        emit FeesUpdated(_managementFee, _performanceFee, _lockerBonus);
-    }
-
-    function withdrawFees() external {
-        _withdrawFees(msg.sender);
-    }
-
-    function withdrawFees(address _receiver) external {
-        _withdrawFees(_receiver);
-    }
-
-    function _withdrawFees(address _receiver) internal {
-        require(
-            msg.sender == TokenizedStrategy.management() ||
-                msg.sender == TokenizedStrategy.performanceFeeRecipient(),
-            "!authorized"
-        );
-
-        uint256 amount = feeShares;
-        feeShares = 0;
-        ERC20(address(vault)).safeTransfer(_receiver, amount);
+        ILockedVaultAccountant(accountant).pullLockerBonus(address(vault));
     }
 
     function _postWithdrawHook(
