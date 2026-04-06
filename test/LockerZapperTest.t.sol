@@ -43,6 +43,13 @@ contract LockerZapperTest is Test {
         uint256 lockedShares,
         uint256 unlockedSharesOut
     );
+    event ZappedIn(
+        address indexed lockedVault,
+        address indexed owner,
+        address indexed receiver,
+        uint256 unlockedSharesIn,
+        uint256 lockedSharesOut
+    );
 
     function setUp() public {
         management = makeAddr("management");
@@ -137,6 +144,64 @@ contract LockerZapperTest is Test {
         assertEq(asset.balanceOf(address(zapper)), 0, "zapper should not retain asset dust");
     }
 
+    function test_zapIn_returnsLockedShares() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+        _approveUnlockedVaultShares(alice, shares);
+
+        uint256 expectedAssetsOut = yvUSD.previewRedeem(shares);
+        uint256 expectedLockedSharesOut = lockedVault.previewDeposit(
+            expectedAssetsOut
+        );
+
+        vm.expectEmit(true, true, true, true);
+        emit ZappedIn(
+            address(lockedVault),
+            alice,
+            bob,
+            shares,
+            expectedLockedSharesOut
+        );
+
+        vm.prank(alice);
+        uint256 lockedSharesOut = zapper.zapIn(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedLockedSharesOut
+        );
+
+        assertEq(
+            lockedSharesOut,
+            expectedLockedSharesOut,
+            "output should match deposit preview"
+        );
+        assertEq(
+            IERC20(address(yvUSD)).balanceOf(alice),
+            0,
+            "unlocked shares should be burned"
+        );
+        assertEq(
+            lockedVault.balanceOf(bob),
+            lockedSharesOut,
+            "receiver should get locked shares"
+        );
+        assertEq(
+            lockedVault.balanceOf(address(zapper)),
+            0,
+            "zapper should not retain locked shares"
+        );
+        assertEq(
+            IERC20(address(yvUSD)).balanceOf(address(zapper)),
+            0,
+            "zapper should not retain unlocked shares"
+        );
+        assertEq(
+            asset.balanceOf(address(zapper)),
+            0,
+            "zapper should not retain asset dust"
+        );
+    }
+
     function test_zapOut_worksWhenVaultIsIlliquid() public {
         uint256 shares = _depositToLockedVault(alice, TEST_AMOUNT);
         _makeVaultIlliquid(ILLIQUID_DEBT);
@@ -176,6 +241,60 @@ contract LockerZapperTest is Test {
         assertEq(asset.balanceOf(address(zapper)), 0, "zapper should not retain asset dust");
     }
 
+    function test_zapIn_worksWhenVaultIsIlliquid() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+        _makeVaultIlliquid(ILLIQUID_DEBT);
+        _approveUnlockedVaultShares(alice, shares);
+
+        uint256 expectedAssetsOut = yvUSD.previewRedeem(shares);
+        uint256 expectedLockedSharesOut = lockedVault.previewDeposit(
+            expectedAssetsOut
+        );
+
+        vm.prank(alice);
+        vm.expectRevert();
+        yvUSD.redeem(shares, alice, alice);
+
+        vm.prank(alice);
+        uint256 lockedSharesOut = zapper.zapIn(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedLockedSharesOut
+        );
+
+        assertEq(
+            lockedSharesOut,
+            expectedLockedSharesOut,
+            "illiquid entry should still mint the expected locked shares"
+        );
+        assertEq(
+            IERC20(address(yvUSD)).balanceOf(alice),
+            0,
+            "unlocked shares should be burned"
+        );
+        assertEq(
+            lockedVault.balanceOf(bob),
+            lockedSharesOut,
+            "receiver should get locked shares after the flash loop"
+        );
+        assertEq(
+            lockedVault.balanceOf(address(zapper)),
+            0,
+            "zapper should not retain locked shares"
+        );
+        assertEq(
+            IERC20(address(yvUSD)).balanceOf(address(zapper)),
+            0,
+            "zapper should not retain unlocked shares"
+        );
+        assertEq(
+            asset.balanceOf(address(zapper)),
+            0,
+            "zapper should not retain asset dust"
+        );
+    }
+
     function test_zapOut_zeroShares_stillReverts() public {
         vm.prank(alice);
         vm.expectRevert();
@@ -205,6 +324,14 @@ contract LockerZapperTest is Test {
         zapper.zapOut(address(lockedVault), shares, bob, 0);
     }
 
+    function test_zapIn_revertsWithoutApproval() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        zapper.zapIn(address(lockedVault), shares, bob, 0);
+    }
+
     function test_zapOut_revertsWhenMinUnlockedSharesIsTooHigh() public {
         uint256 shares = _depositToLockedVault(alice, TEST_AMOUNT);
         _startCooldownAndApprove(alice, shares);
@@ -214,6 +341,24 @@ contract LockerZapperTest is Test {
         vm.prank(alice);
         vm.expectRevert("!min out");
         zapper.zapOut(address(lockedVault), shares, bob, expectedSharesOut + 1);
+    }
+
+    function test_zapIn_revertsWhenMinLockedSharesIsTooHigh() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+        _approveUnlockedVaultShares(alice, shares);
+        uint256 expectedAssetsOut = yvUSD.previewRedeem(shares);
+        uint256 expectedLockedSharesOut = lockedVault.previewDeposit(
+            expectedAssetsOut
+        );
+
+        vm.prank(alice);
+        vm.expectRevert("!min out");
+        zapper.zapIn(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedLockedSharesOut + 1
+        );
     }
 
     function test_onMorphoFlashLoan_revertsIfNotMorpho() public {
@@ -231,11 +376,26 @@ contract LockerZapperTest is Test {
         vm.stopPrank();
     }
 
+    function _depositToUnlockedVault(
+        address user,
+        uint256 amount
+    ) internal returns (uint256 shares) {
+        vm.startPrank(user);
+        asset.approve(address(yvUSD), amount);
+        shares = yvUSD.deposit(amount, user);
+        vm.stopPrank();
+    }
+
     function _startCooldownAndApprove(address user, uint256 shares) internal {
         _startCooldown(user, shares);
 
         vm.prank(user);
         lockedVault.approve(address(zapper), shares);
+    }
+
+    function _approveUnlockedVaultShares(address user, uint256 shares) internal {
+        vm.prank(user);
+        IERC20(address(yvUSD)).approve(address(zapper), shares);
     }
 
     function _startCooldown(address user, uint256 shares) internal {
