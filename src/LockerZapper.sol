@@ -48,7 +48,7 @@ contract LockerZapper is IMorphoFlashLoanCallback {
         uint256 lockedSharesBefore = lockedVault.balanceOf(_receiver);
 
         IMorpho(MORPHO).flashLoan(
-            asset,
+            address(asset),
             unlockedVault.previewRedeem(_unlockedShares),
             abi.encode(
                 address(unlockedVault),
@@ -83,13 +83,13 @@ contract LockerZapper is IMorphoFlashLoanCallback {
             IERC20 asset
         ) = _context(_lockedVault);
 
-        asset.forceApprove(unlockedVault, type(uint256).max);
+        asset.forceApprove(address(unlockedVault), type(uint256).max);
         asset.forceApprove(MORPHO, type(uint256).max);
 
         uint256 wrappedSharesBefore = unlockedVault.balanceOf(_receiver);
 
         IMorpho(MORPHO).flashLoan(
-            asset,
+            address(asset),
             lockedVault.previewRedeem(_lockedShares),
             abi.encode(
                 _lockedVault,
@@ -130,7 +130,9 @@ contract LockerZapper is IMorphoFlashLoanCallback {
 
         IVault(fromVault).redeem(shares, address(this), owner);
 
-        uint256 extraAssets = IERC20(toVault.asset()).balanceOf(address(this));
+        uint256 extraAssets = IERC20(IVault(toVault).asset()).balanceOf(
+            address(this)
+        );
         if (extraAssets > _assets + 1) {
             IVault(toVault).deposit(extraAssets - _assets, receiver);
         }

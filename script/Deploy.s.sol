@@ -14,6 +14,7 @@ contract DeployScript is Script {
         address governance;
         string memory name;
         address accountant;
+        address feeRecipient;
 
         vm.startBroadcast();
 
@@ -24,9 +25,9 @@ contract DeployScript is Script {
         console.log("Token name:", name);
 
         if (accountant == address(0)) {
-            LockedVaultAccountant accountant = new LockedVaultAccountant(
+            accountant = address(new LockedVaultAccountant(
                 governance
-            );
+            ));
             console.log("LockedVaultAccountant deployed at:", address(accountant));
         } else {
             console.log("LockedVaultAccountant already deployed at:", accountant);
@@ -35,7 +36,7 @@ contract DeployScript is Script {
         ILockedVault lockedStrategy = ILockedVault(address(lockedVault));
 
         lockedStrategy.setPerformanceFee(0);
-        lockedStrategy.setPerformanceFeeRecipient(address(feeSplitter));
+        lockedStrategy.setPerformanceFeeRecipient(feeRecipient);
         lockedStrategy.setProfitMaxUnlockTime(3 days);
 
         LockerZapper lockerZapper = new LockerZapper();
