@@ -245,6 +245,7 @@ contract LockedVaultAccountant is Governance {
         );
     }
 
+    // NOTE: A reserve vault can be used by multiple vaults with the same asset.
     function setReserveVault(
         address _vault,
         address _reserveVault

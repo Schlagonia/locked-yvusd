@@ -27,6 +27,7 @@ contract LockedVault is BaseHooks, Base4626Compounder {
     }
 
     uint256 public constant MAX_COOLDOWN_DURATION = 30 days;
+    uint256 public constant MIN_WITHDRAWAL_WINDOW = 1 days;
     address public constant GOVERNANCE =
         0x88Ba032be87d5EF1fbE87336B7090767F367BF73;
 
@@ -141,7 +142,10 @@ contract LockedVault is BaseHooks, Base4626Compounder {
     function setWithdrawalWindow(
         uint256 _withdrawalWindow
     ) external onlyGovernance {
-        require(_withdrawalWindow >= 1 days, "Withdrawal window too short");
+        require(
+            _withdrawalWindow >= MIN_WITHDRAWAL_WINDOW,
+            "Withdrawal window too short"
+        );
         withdrawalWindow = _withdrawalWindow;
         emit WithdrawalWindowUpdated(_withdrawalWindow);
     }
