@@ -121,11 +121,6 @@ contract LockedVaultTest is Test {
         assertEq(lockedVault.cooldownDuration(), COOLDOWN_DURATION);
         assertEq(yvUSD.accountant(), address(accountant), "accountant mismatch");
         assertEq(
-            lockedVault.GOVERNANCE(),
-            GOVERNANCE,
-            "governance should match the hardcoded address"
-        );
-        assertEq(
             lockedVault.MAX_COOLDOWN_DURATION(),
             MAX_COOLDOWN_DURATION,
             "max cooldown should be 30 days"
@@ -197,7 +192,7 @@ contract LockedVaultTest is Test {
     }
 
     function test_zeroCooldownLetsUsersExitImmediately() public {
-        vm.prank(GOVERNANCE);
+        vm.prank(management);
         lockedVault.setCooldownDuration(0);
 
         uint256 shares = depositToLockedVault(alice, TEST_AMOUNT);
@@ -207,16 +202,12 @@ contract LockedVaultTest is Test {
         assertGt(assetsOut, 0, "should redeem without cooldown");
     }
 
-    function test_onlyGovernanceCanUpdateCooldownConfig() public {
-        vm.prank(management);
-        vm.expectRevert("Not governance");
-        lockedVault.setCooldownDuration(0);
-
+    function test_onlyManagementCanUpdateCooldownConfig() public {
         vm.prank(attacker);
-        vm.expectRevert("Not governance");
+        vm.expectRevert("!management");
         lockedVault.setWithdrawalWindow(2 days);
 
-        vm.startPrank(GOVERNANCE);
+        vm.startPrank(management);
         lockedVault.setCooldownDuration(0);
         lockedVault.setWithdrawalWindow(2 days);
         vm.stopPrank();
@@ -229,8 +220,8 @@ contract LockedVaultTest is Test {
         );
     }
 
-    function test_governanceCannotSetCooldownAboveMax() public {
-        vm.prank(GOVERNANCE);
+    function test_managementCannotSetCooldownAboveMax() public {
+        vm.prank(management);
         vm.expectRevert("Cooldown duration too long");
         lockedVault.setCooldownDuration(MAX_COOLDOWN_DURATION + 1);
     }
