@@ -215,7 +215,7 @@ contract LockedVaultAccountant is Governance {
     ) external onlyGovernance {
         require(_vault != address(0), "!vault");
         require(
-            _locker != address(0) && ILockedVault(_locker).vault() == _vault,
+            _locker == address(0) || ILockedVault(_locker).vault() == _vault,
             "!locker"
         );
         require(
