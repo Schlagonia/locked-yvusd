@@ -215,7 +215,7 @@ contract LockedVaultAccountant is Governance {
     ) external onlyGovernance {
         require(_vault != address(0), "!vault");
         require(
-            _locker == address(0) || ILockedVault(_locker).vault() == _vault,
+            _locker != address(0) && ILockedVault(_locker).vault() == _vault,
             "!locker"
         );
         require(
@@ -299,13 +299,7 @@ contract LockedVaultAccountant is Governance {
         uint256 _amount,
         address _receiver
     ) external onlyGovernance {
-        VaultConfig storage config = vaultConfigs[_asset];
-        uint256 claimable;
-        if (config.locker != address(0)) {
-            claimable = claimableFeeShares(_asset);
-        } else {
-            claimable = IERC20(_asset).balanceOf(address(this));
-        }
+        uint256 claimable = claimableFeeShares(_asset);
 
         claimable = Math.min(claimable, _amount);
         if (claimable > 0) {
