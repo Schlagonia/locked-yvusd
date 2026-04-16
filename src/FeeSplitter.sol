@@ -127,7 +127,7 @@ contract FeeSplitter is Governance {
         uint256 amount;
         // Track actual paid amount for event.
         uint256 paid;
-        for (uint i = 0; i < _receivers.length; i++) {
+        for (uint256 i = 0; i < _receivers.length; i++) {
             amount = (balance * _splits[i]) / BASIS_POINTS;
 
             if (amount > 0) {
@@ -167,7 +167,7 @@ contract FeeSplitter is Governance {
         receivers_ = tokenSplits[_token].receivers.values();
         splits_ = new uint256[](receivers_.length);
 
-        for (uint i = 0; i < receivers_.length; i++) {
+        for (uint256 i = 0; i < receivers_.length; i++) {
             splits_[i] = tokenSplits[_token].splits[receivers_[i]];
         }
     }

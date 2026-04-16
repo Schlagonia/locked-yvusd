@@ -2,68 +2,64 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {LockerZapper} from "../src/LockerZapper.sol";
-import {LockedyvUSD} from "../src/LockedyvUSD.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 import {IVault} from "@yearn-vaults/interfaces/IVault.sol";
 import {IVaultFactory} from "@yearn-vaults/interfaces/IVaultFactory.sol";
 import {Roles} from "@yearn-vaults/interfaces/Roles.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {LockedVault} from "../src/LockedVault.sol";
+import {LockedVaultAccountant} from "../src/LockedVaultAccountant.sol";
+import {LockerZapper} from "../src/LockerZapper.sol";
+import {ILockedVault} from "../src/interfaces/ILockedVault.sol";
+import {MockIlliquid4626Strategy} from "./mocks/MockIlliquid4626Strategy.sol";
 
 contract LockerZapperTest is Test {
-    // Core contracts
+    ILockedVault public lockedVault;
+    LockedVaultAccountant public accountant;
     LockerZapper public zapper;
-    LockedyvUSD public lockedVault;
     IVault public yvUSD;
     IVaultFactory public vaultFactory;
     IERC20 public asset;
 
-    // Addresses
     address constant VAULT_FACTORY = 0x770D0d1Fb036483Ed4AbB6d53c1C88fb277D812F;
-    address public management;
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant GOVERNANCE = 0x88Ba032be87d5EF1fbE87336B7090767F367BF73;
 
-    // Test users
+    address public management;
+    address public performanceFeeRecipient;
     address public alice;
     address public bob;
 
-    // Test constants
     uint256 constant COOLDOWN_DURATION = 14 days;
-    uint256 constant WITHDRAWAL_WINDOW = 7 days;
-    uint256 constant INITIAL_DEPOSIT = 1_000_000e6;
     uint256 constant TEST_AMOUNT = 10_000e6;
+    uint256 constant INITIAL_DEPOSIT = 1_000_000e6;
+    uint256 constant ILLIQUID_DEBT = 9_000e6;
 
-    event ZapIn(
-        address indexed user,
-        uint256 indexed assetAmount,
-        uint256 indexed lockedShares
+    event ZappedOut(
+        address indexed lockedVault,
+        address indexed owner,
+        address indexed receiver,
+        uint256 lockedShares,
+        uint256 unlockedSharesOut
     );
-
-    event ZapOut(
-        address indexed user,
-        uint256 indexed lockedShares,
-        uint256 indexed assetAmount
+    event ZappedIn(
+        address indexed lockedVault,
+        address indexed owner,
+        address indexed receiver,
+        uint256 unlockedSharesIn,
+        uint256 lockedSharesOut
     );
 
     function setUp() public {
-        // Setup addresses
         management = makeAddr("management");
+        performanceFeeRecipient = makeAddr("performanceFeeRecipient");
         alice = makeAddr("alice");
         bob = makeAddr("bob");
 
-        // Label addresses
-        vm.label(management, "Management");
-        vm.label(alice, "Alice");
-        vm.label(bob, "Bob");
-
-        // Setup vault factory
         vaultFactory = IVaultFactory(VAULT_FACTORY);
-        vm.label(VAULT_FACTORY, "VaultFactory");
-
-        // Use USDC as asset
-        address USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
         asset = IERC20(USDC);
-        vm.label(address(asset), "USDC");
 
-        // Deploy yvUSD vault
         vm.startPrank(management);
         yvUSD = IVault(
             vaultFactory.deploy_new_vault(
@@ -74,386 +70,352 @@ contract LockerZapperTest is Test {
                 7 days
             )
         );
-        vm.label(address(yvUSD), "yvUSD");
 
-        // Deploy LockedyvUSD
-        lockedVault = new LockedyvUSD(address(yvUSD), "Locked yvUSD");
-        vm.label(address(lockedVault), "LockedyvUSD");
+        lockedVault = ILockedVault(
+            address(new LockedVault(address(yvUSD), "Locked Vault"))
+        );
+        accountant = new LockedVaultAccountant(GOVERNANCE);
+        zapper = new LockerZapper();
 
-        // Configure vault
+        lockedVault.setPerformanceFee(0);
+        lockedVault.setPerformanceFeeRecipient(performanceFeeRecipient);
+        lockedVault.setProfitMaxUnlockTime(7 days);
+        lockedVault.setDoHealthCheck(false);
+        lockedVault.setProfitLimitRatio(10_000);
+        lockedVault.setLossLimitRatio(500);
+
         yvUSD.set_role(management, Roles.ALL);
         yvUSD.set_deposit_limit(type(uint256).max);
-        yvUSD.set_accountant(address(lockedVault));
         vm.stopPrank();
 
-        // Deploy zapper
-        zapper = new LockerZapper(
-            address(lockedVault)
+        vm.prank(GOVERNANCE);
+        accountant.setVaultConfig(
+            address(yvUSD),
+            address(lockedVault),
+            25,
+            1_000,
+            1_000,
+            0
         );
-        vm.label(address(zapper), "LockerZapper");
 
-        // Fund test users
+        vm.prank(management);
+        yvUSD.set_accountant(address(accountant));
+
         deal(address(asset), alice, INITIAL_DEPOSIT);
         deal(address(asset), bob, INITIAL_DEPOSIT);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            ZAP IN TESTS
-    //////////////////////////////////////////////////////////////*/
+    function test_zapOut_returnsUnlockedShares() public {
+        uint256 shares = _depositToLockedVault(alice, TEST_AMOUNT);
+        _startCooldownAndApprove(alice, shares);
 
-    function test_zapIn_basic() public {
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
+        uint256 expectedAssetsOut = lockedVault.previewRedeem(shares);
+        uint256 expectedSharesOut = yvUSD.previewDeposit(expectedAssetsOut);
 
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT, alice);
-        vm.stopPrank();
+        vm.expectEmit(true, true, true, true);
+        emit ZappedOut(
+            address(lockedVault),
+            alice,
+            bob,
+            shares,
+            expectedSharesOut
+        );
 
-        assertGt(lockedShares, 0, "Should receive locked shares");
+        vm.prank(alice);
+        uint256 unlockedSharesOut = zapper.zapOut(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedSharesOut
+        );
+
+        assertEq(unlockedSharesOut, expectedSharesOut, "output should match deposit preview");
+        assertEq(lockedVault.balanceOf(alice), 0, "locked shares should be burned");
         assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
-            lockedShares,
-            "Alice should have locked shares"
+            IERC20(address(yvUSD)).balanceOf(bob),
+            unlockedSharesOut,
+            "receiver should get unlocked vault shares"
         );
         assertEq(
-            asset.balanceOf(alice),
-            INITIAL_DEPOSIT - TEST_AMOUNT,
-            "Asset should be deducted"
-        );
-    }
-
-    function test_zapIn_defaultReceiver() public {
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
-        vm.stopPrank();
-
-        assertGt(lockedShares, 0, "Should receive locked shares");
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
-            lockedShares,
-            "Alice should have locked shares"
-        );
-    }
-
-    function test_zapIn_maxAmount() public {
-        vm.startPrank(alice);
-        asset.approve(address(zapper), type(uint256).max);
-
-        uint256 lockedShares = zapper.zapIn(type(uint256).max);
-        vm.stopPrank();
-
-        assertGt(lockedShares, 0, "Should receive locked shares");
-        assertEq(asset.balanceOf(alice), 0, "All assets should be deposited");
-    }
-
-    function test_zapIn_differentReceiver() public {
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT, bob);
-        vm.stopPrank();
-
-        assertGt(lockedShares, 0, "Should receive locked shares");
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(bob),
-            lockedShares,
-            "Bob should have locked shares"
-        );
-        assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
+            IERC20(address(yvUSD)).balanceOf(address(zapper)),
             0,
-            "Alice should have no locked shares"
+            "zapper should not retain unlocked shares"
         );
+        assertEq(asset.balanceOf(address(zapper)), 0, "zapper should not retain asset dust");
     }
 
-    function test_zapIn_emitsEvent() public {
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
+    function test_zapIn_returnsLockedShares() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+        _approveUnlockedVaultShares(alice, shares);
 
-        // We expect the ZapIn event, but we can't predict exact lockedShares
-        vm.expectEmit(true, true, false, false);
-        emit ZapIn(alice, TEST_AMOUNT, 0);
+        uint256 expectedAssetsOut = yvUSD.previewRedeem(shares);
+        uint256 expectedLockedSharesOut = lockedVault.previewDeposit(
+            expectedAssetsOut
+        );
 
-        zapper.zapIn(TEST_AMOUNT, alice);
-        vm.stopPrank();
-    }
+        vm.expectEmit(true, true, true, true);
+        emit ZappedIn(
+            address(lockedVault),
+            alice,
+            bob,
+            shares,
+            expectedLockedSharesOut
+        );
 
-    function test_zapIn_revertZeroAmount() public {
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
+        vm.prank(alice);
+        uint256 lockedSharesOut = zapper.zapIn(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedLockedSharesOut
+        );
 
-        vm.expectRevert("Amount must be > 0");
-        zapper.zapIn(0, alice);
-        vm.stopPrank();
-    }
-
-    function test_zapIn_revertZeroReceiver() public {
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-
-        vm.expectRevert("Invalid receiver");
-        zapper.zapIn(TEST_AMOUNT, address(0));
-        vm.stopPrank();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            ZAP OUT TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_zapOut_basic() public {
-        // First zap in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT, alice);
-
-        // Start cooldown
-        lockedVault.startCooldown(lockedShares);
-
-        // Warp past cooldown
-        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
-
-        // Approve zapper to spend locked shares
-        IERC20(address(lockedVault)).approve(address(zapper), lockedShares);
-
-        uint256 assetsBefore = asset.balanceOf(alice);
-        uint256 assetsReceived = zapper.zapOut(lockedShares, alice);
-        vm.stopPrank();
-
-        assertGt(assetsReceived, 0, "Should receive assets");
         assertEq(
-            asset.balanceOf(alice),
-            assetsBefore + assetsReceived,
-            "Assets should be received"
+            lockedSharesOut,
+            expectedLockedSharesOut,
+            "output should match deposit preview"
         );
         assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
+            IERC20(address(yvUSD)).balanceOf(alice),
             0,
-            "Should have no locked shares left"
+            "unlocked shares should be burned"
         );
-    }
-
-    function test_zapOut_defaultReceiver() public {
-        // First zap in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
-
-        // Start cooldown
-        lockedVault.startCooldown(lockedShares);
-
-        // Warp past cooldown
-        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
-
-        // Approve and zap out
-        IERC20(address(lockedVault)).approve(address(zapper), lockedShares);
-
-        uint256 assetsBefore = asset.balanceOf(alice);
-        uint256 assetsReceived = zapper.zapOut(lockedShares);
-        vm.stopPrank();
-
-        assertGt(assetsReceived, 0, "Should receive assets");
         assertEq(
-            asset.balanceOf(alice),
-            assetsBefore + assetsReceived,
-            "Assets should be received"
+            lockedVault.balanceOf(bob),
+            lockedSharesOut,
+            "receiver should get locked shares"
         );
-    }
-
-    function test_zapOut_maxShares() public {
-        // First zap in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
-
-        // Start cooldown for all shares
-        lockedVault.startCooldown(lockedShares);
-
-        // Warp past cooldown
-        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
-
-        // Approve and zap out with max
-        IERC20(address(lockedVault)).approve(address(zapper), type(uint256).max);
-
-        uint256 assetsReceived = zapper.zapOut(type(uint256).max);
-        vm.stopPrank();
-
-        assertGt(assetsReceived, 0, "Should receive assets");
         assertEq(
-            IERC20(address(lockedVault)).balanceOf(alice),
+            lockedVault.balanceOf(address(zapper)),
             0,
-            "Should have no locked shares left"
+            "zapper should not retain locked shares"
         );
-    }
-
-    function test_zapOut_differentReceiver() public {
-        // First zap in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
-
-        // Start cooldown
-        lockedVault.startCooldown(lockedShares);
-
-        // Warp past cooldown
-        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
-
-        // Approve and zap out to bob
-        IERC20(address(lockedVault)).approve(address(zapper), lockedShares);
-
-        uint256 bobAssetsBefore = asset.balanceOf(bob);
-        uint256 assetsReceived = zapper.zapOut(lockedShares, bob);
-        vm.stopPrank();
-
-        assertGt(assetsReceived, 0, "Should receive assets");
         assertEq(
-            asset.balanceOf(bob),
-            bobAssetsBefore + assetsReceived,
-            "Bob should receive assets"
+            IERC20(address(yvUSD)).balanceOf(address(zapper)),
+            0,
+            "zapper should not retain unlocked shares"
+        );
+        assertEq(
+            asset.balanceOf(address(zapper)),
+            0,
+            "zapper should not retain asset dust"
         );
     }
 
-    function test_zapOut_revertBeforeCooldown() public {
-        // First zap in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
+    function test_zapOut_worksWhenVaultIsIlliquid() public {
+        uint256 shares = _depositToLockedVault(alice, TEST_AMOUNT);
+        _makeVaultIlliquid(ILLIQUID_DEBT);
+        _startCooldownAndApprove(alice, shares);
 
-        // Start cooldown but don't warp
-        lockedVault.startCooldown(lockedShares);
+        uint256 expectedAssetsOut = lockedVault.previewRedeem(shares);
+        uint256 expectedSharesOut = yvUSD.previewDeposit(expectedAssetsOut);
 
-        // Approve zapper
-        IERC20(address(lockedVault)).approve(address(zapper), lockedShares);
-
-        // Should revert because cooldown not complete
+        vm.prank(alice);
         vm.expectRevert("ERC4626: redeem more than max");
-        zapper.zapOut(lockedShares);
-        vm.stopPrank();
-    }
+        lockedVault.redeem(shares, alice, alice);
 
-    function test_zapOut_revertNoCooldown() public {
-        // First zap in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
+        vm.prank(alice);
+        uint256 unlockedSharesOut = zapper.zapOut(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedSharesOut
+        );
 
-        // Don't start cooldown
-
-        // Approve zapper
-        IERC20(address(lockedVault)).approve(address(zapper), lockedShares);
-
-        // Should revert because no cooldown started
-        vm.expectRevert("ERC4626: redeem more than max");
-        zapper.zapOut(lockedShares);
-        vm.stopPrank();
-    }
-
-    function test_zapOut_revertZeroShares() public {
-        vm.startPrank(alice);
-        vm.expectRevert("Shares must be > 0");
-        zapper.zapOut(0, alice);
-        vm.stopPrank();
-    }
-
-    function test_zapOut_revertZeroReceiver() public {
-        vm.startPrank(alice);
-        vm.expectRevert("Invalid receiver");
-        zapper.zapOut(TEST_AMOUNT, address(0));
-        vm.stopPrank();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            PREVIEW TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_previewZapIn() public view {
-        uint256 preview = zapper.previewZapIn(TEST_AMOUNT);
-        assertGt(preview, 0, "Preview should return positive value");
-    }
-
-    function test_previewZapOut() public {
-        // First zap in to have some shares
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
-        vm.stopPrank();
-
-        uint256 preview = zapper.previewZapOut(lockedShares);
-        assertGt(preview, 0, "Preview should return positive value");
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        INTEGRATION TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_fullCycle_zapInCooldownZapOut() public {
-        uint256 initialBalance = asset.balanceOf(alice);
-
-        // Zap in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 lockedShares = zapper.zapIn(TEST_AMOUNT);
-
-        // Start cooldown
-        lockedVault.startCooldown(lockedShares);
-
-        // Warp past cooldown
-        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
-
-        // Zap out
-        IERC20(address(lockedVault)).approve(address(zapper), lockedShares);
-        uint256 assetsReceived = zapper.zapOut(lockedShares);
-        vm.stopPrank();
-
-        // Should get back approximately same amount (no gains/losses in this simple test)
-        assertApproxEqRel(
-            assetsReceived,
-            TEST_AMOUNT,
-            0.01e18,
-            "Should get back approximately same amount"
+        assertEq(
+            unlockedSharesOut,
+            expectedSharesOut,
+            "illiquid exit should still mint the expected unlocked shares"
+        );
+        assertEq(lockedVault.balanceOf(alice), 0, "locked shares should be burned");
+        assertEq(
+            IERC20(address(yvUSD)).balanceOf(bob),
+            unlockedSharesOut,
+            "receiver should get unlocked shares after the flash unwind"
         );
         assertEq(
-            asset.balanceOf(alice),
-            initialBalance - TEST_AMOUNT + assetsReceived,
-            "Balance should be correct"
+            IERC20(address(yvUSD)).balanceOf(address(zapper)),
+            0,
+            "zapper should not retain unlocked shares"
+        );
+        assertEq(asset.balanceOf(address(zapper)), 0, "zapper should not retain asset dust");
+    }
+
+    function test_zapIn_worksWhenVaultIsIlliquid() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+        _makeVaultIlliquid(ILLIQUID_DEBT);
+        _approveUnlockedVaultShares(alice, shares);
+
+        uint256 expectedAssetsOut = yvUSD.previewRedeem(shares);
+        uint256 expectedLockedSharesOut = lockedVault.previewDeposit(
+            expectedAssetsOut
+        );
+
+        vm.prank(alice);
+        vm.expectRevert();
+        yvUSD.redeem(shares, alice, alice);
+
+        vm.prank(alice);
+        uint256 lockedSharesOut = zapper.zapIn(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedLockedSharesOut
+        );
+
+        assertEq(
+            lockedSharesOut,
+            expectedLockedSharesOut,
+            "illiquid entry should still mint the expected locked shares"
+        );
+        assertEq(
+            IERC20(address(yvUSD)).balanceOf(alice),
+            0,
+            "unlocked shares should be burned"
+        );
+        assertEq(
+            lockedVault.balanceOf(bob),
+            lockedSharesOut,
+            "receiver should get locked shares after the flash loop"
+        );
+        assertEq(
+            lockedVault.balanceOf(address(zapper)),
+            0,
+            "zapper should not retain locked shares"
+        );
+        assertEq(
+            IERC20(address(yvUSD)).balanceOf(address(zapper)),
+            0,
+            "zapper should not retain unlocked shares"
+        );
+        assertEq(
+            asset.balanceOf(address(zapper)),
+            0,
+            "zapper should not retain asset dust"
         );
     }
 
-    function test_multipleUsers_zapInOut() public {
-        // Alice zaps in
-        vm.startPrank(alice);
-        asset.approve(address(zapper), TEST_AMOUNT);
-        uint256 aliceShares = zapper.zapIn(TEST_AMOUNT);
-        lockedVault.startCooldown(aliceShares);
-        vm.stopPrank();
+    function test_zapOut_zeroShares_stillReverts() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        zapper.zapOut(address(lockedVault), 0, bob, 0);
+    }
 
-        // Bob zaps in
-        vm.startPrank(bob);
-        asset.approve(address(zapper), TEST_AMOUNT * 2);
-        uint256 bobShares = zapper.zapIn(TEST_AMOUNT * 2);
-        lockedVault.startCooldown(bobShares);
-        vm.stopPrank();
+    function test_zapOut_zeroReceiver_stillReverts() public {
+        uint256 shares = _depositToLockedVault(alice, TEST_AMOUNT);
+        _startCooldownAndApprove(alice, shares);
 
-        // Warp past cooldown
-        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
+        vm.prank(alice);
+        vm.expectRevert();
+        zapper.zapOut(address(lockedVault), 1, address(0), 0);
+    }
 
-        // Both zap out
-        vm.startPrank(alice);
-        IERC20(address(lockedVault)).approve(address(zapper), aliceShares);
-        uint256 aliceAssets = zapper.zapOut(aliceShares);
-        vm.stopPrank();
+    function test_zapOut_zeroLockedVault_stillReverts() public {
+        vm.expectRevert();
+        zapper.zapOut(address(0), 1, bob, 0);
+    }
 
-        vm.startPrank(bob);
-        IERC20(address(lockedVault)).approve(address(zapper), bobShares);
-        uint256 bobAssets = zapper.zapOut(bobShares);
-        vm.stopPrank();
+    function test_zapOut_revertsWithoutApproval() public {
+        uint256 shares = _depositToLockedVault(alice, TEST_AMOUNT);
+        _startCooldown(alice, shares);
 
-        // Bob should get approximately 2x Alice (since he deposited 2x)
-        assertApproxEqRel(
-            bobAssets,
-            aliceAssets * 2,
-            0.01e18,
-            "Bob should get 2x Alice's assets"
+        vm.prank(alice);
+        vm.expectRevert();
+        zapper.zapOut(address(lockedVault), shares, bob, 0);
+    }
+
+    function test_zapIn_revertsWithoutApproval() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        zapper.zapIn(address(lockedVault), shares, bob, 0);
+    }
+
+    function test_zapOut_revertsWhenMinUnlockedSharesIsTooHigh() public {
+        uint256 shares = _depositToLockedVault(alice, TEST_AMOUNT);
+        _startCooldownAndApprove(alice, shares);
+        uint256 expectedAssetsOut = lockedVault.previewRedeem(shares);
+        uint256 expectedSharesOut = yvUSD.previewDeposit(expectedAssetsOut);
+
+        vm.prank(alice);
+        vm.expectRevert("!min out");
+        zapper.zapOut(address(lockedVault), shares, bob, expectedSharesOut + 1);
+    }
+
+    function test_zapIn_revertsWhenMinLockedSharesIsTooHigh() public {
+        uint256 shares = _depositToUnlockedVault(alice, TEST_AMOUNT);
+        _approveUnlockedVaultShares(alice, shares);
+        uint256 expectedAssetsOut = yvUSD.previewRedeem(shares);
+        uint256 expectedLockedSharesOut = lockedVault.previewDeposit(
+            expectedAssetsOut
         );
+
+        vm.prank(alice);
+        vm.expectRevert("!min out");
+        zapper.zapIn(
+            address(lockedVault),
+            shares,
+            bob,
+            expectedLockedSharesOut + 1
+        );
+    }
+
+    function test_onMorphoFlashLoan_revertsIfNotMorpho() public {
+        vm.expectRevert("Not Morpho");
+        zapper.onMorphoFlashLoan(1, bytes(""));
+    }
+
+    function _depositToLockedVault(
+        address user,
+        uint256 amount
+    ) internal returns (uint256 shares) {
+        vm.startPrank(user);
+        asset.approve(address(lockedVault), amount);
+        shares = lockedVault.deposit(amount, user);
+        vm.stopPrank();
+    }
+
+    function _depositToUnlockedVault(
+        address user,
+        uint256 amount
+    ) internal returns (uint256 shares) {
+        vm.startPrank(user);
+        asset.approve(address(yvUSD), amount);
+        shares = yvUSD.deposit(amount, user);
+        vm.stopPrank();
+    }
+
+    function _startCooldownAndApprove(address user, uint256 shares) internal {
+        _startCooldown(user, shares);
+
+        vm.prank(user);
+        lockedVault.approve(address(zapper), shares);
+    }
+
+    function _approveUnlockedVaultShares(address user, uint256 shares) internal {
+        vm.prank(user);
+        IERC20(address(yvUSD)).approve(address(zapper), shares);
+    }
+
+    function _startCooldown(address user, uint256 shares) internal {
+        vm.prank(user);
+        lockedVault.startCooldown(shares);
+
+        vm.warp(block.timestamp + COOLDOWN_DURATION + 1 days);
+    }
+
+    function _makeVaultIlliquid(uint256 debtAmount) internal {
+        MockIlliquid4626Strategy strategy = new MockIlliquid4626Strategy(
+            asset,
+            "Illiquid Strategy",
+            "illUSD"
+        );
+
+        vm.startPrank(management);
+        yvUSD.add_strategy(address(strategy));
+        yvUSD.update_max_debt_for_strategy(address(strategy), type(uint256).max);
+        yvUSD.update_debt(address(strategy), debtAmount);
+        vm.stopPrank();
     }
 }
